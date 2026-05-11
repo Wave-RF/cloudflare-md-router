@@ -1,0 +1,58 @@
+{
+  "name": "cloudflare-md-router",
+  "version": "0.1.0",
+  "description": "Cloudflare Worker that serves a `.md` twin of any static page when the request is from a known LLM crawler or explicitly asks for `text/markdown`. Falls back to the HTML response otherwise.",
+  "keywords": [
+    "cloudflare",
+    "cloudflare-workers",
+    "llm",
+    "llms-txt",
+    "markdown",
+    "content-negotiation",
+    "static-site"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Wave RF",
+    "email": "github@wave-rf.com",
+    "url": "https://wave-rf.com"
+  },
+  "contributors": [
+    "Eric Andrechek <eric@wave-rf.com>"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wave-RF/cloudflare-md-router.git"
+  },
+  "bugs": "https://github.com/Wave-RF/cloudflare-md-router/issues",
+  "homepage": "https://github.com/Wave-RF/cloudflare-md-router#readme",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./worker": "./src/worker.ts",
+    "./bots": "./src/bots.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@cloudflare/workers-types": ">=4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240208.0",
+    "typescript": "^5.6.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
