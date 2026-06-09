@@ -83,9 +83,13 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
         // otherwise-immutable asset response. A relative URI-Reference target is
         // valid per RFC 8288 (resolved against the request URL).
         const withTwin = new Response(response.body, response);
+        const encodedPath = mdPathFor(url.pathname)
+          .split('/')
+          .map(segment => encodeURIComponent(segment))
+          .join('/');
         withTwin.headers.append(
           "Link",
-          `<${mdPathFor(url.pathname)}>; rel="alternate"; type="text/markdown"`,
+          `<${encodedPath}>; rel="alternate"; type="text/markdown"`,
         );
         return withTwin;
       }
