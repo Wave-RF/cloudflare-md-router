@@ -22,6 +22,8 @@ Link: </foo/bar.md>; rel="alternate"; type="text/markdown"
 
 This is on by default (only for a `200 text/html` reply to an extension-less GET); disable it with `advertiseTwin: false`.
 
+Because the worker negotiates on the `Accept` header, two clients can get different representations of the same URL. If you put a shared cache (a CDN, Cloudflare's own cache) in front of it, set `vary: true` to add a `Vary: Accept` header to the negotiated responses so the cache keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. It's off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
+
 The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-Web, anthropic-ai, PerplexityBot, CCBot, Applebot-Extended, Google-Extended, cohere-ai, Bytespider, Diffbot. See `src/bots.ts`.
 
 ## Install
@@ -80,6 +82,10 @@ export default createMdRouter({
 
   // Don't advertise the `.md` twin via a `Link` header (default: true).
   advertiseTwin: false,
+
+  // Add `Vary: Accept` to negotiated responses so a shared cache doesn't
+  // cross-serve the HTML and markdown representations (default: false).
+  vary: true,
 });
 ```
 
