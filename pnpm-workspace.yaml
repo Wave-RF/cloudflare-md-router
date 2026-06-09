@@ -1,0 +1,9 @@
+# pnpm config. pnpm 11 reads its settings from here even for a single-package
+# repo (the filename is historical — this is NOT a multi-package workspace decl).
+#
+# Don't auto-install the peer dep (@cloudflare/workers-types) on top of the
+# devDependency copy: the consumer's Worker project provides the workers-types
+# it builds against, and we already pull an exact copy in devDependencies for
+# `pnpm run typecheck`. Keeping autoInstallPeers off keeps the install lean and
+# avoids pnpm running build scripts it wasn't asked to (ERR_PNPM_IGNORED_BUILDS).
+autoInstallPeers: false

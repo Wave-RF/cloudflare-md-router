@@ -1,8 +1,25 @@
-node_modules
-dist
-.DS_Store
+node_modules/
+# Library — consumers resolve via their own lockfile; ours isn't committed (it
+# only pins our devDeps). pnpm *config* lives in pnpm-workspace.yaml, which IS
+# committed.
+pnpm-lock.yaml
+dist/
 *.log
+.DS_Store
 .env
 .env.*
 !.env.example
 .wrangler
+
+# Local git worktrees
+.worktrees/
+
+# Claude Code per-user local state (never committed)
+.claude/settings.local.json
+.claude/worktrees/
+
+# Tree-keyed verify + per-reviewer pre-push markers (written by hooks/scripts)
+tmp/
+
+# Tool caches seeded into worktrees (.worktreeinclude)
+.bin/

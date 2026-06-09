@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Blocks `git push` unless `pnpm run verify` validated the tree of each ref tip.
+# Tree-keyed (not commit-keyed) so verify → commit → push needs no re-run when
+# the tree is unchanged. Universal — humans and Claude Code alike. Bypass:
+# `git push --no-verify` (humans only; agents must not — see AGENTS.md).
+
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+while read -r _ local_sha _ _; do
+  [ -z "${local_sha:-}" ] && continue
+  [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+  marker=$(scripts/ci-marker.sh path-for-commit "$local_sha" 2>/dev/null) || {
+    echo "🛑 pre-push: can't resolve tree for ${local_sha:0:8}." >&2; exit 1
+  }
+  if [ ! -f "$marker" ]; then
+    tree="${marker#tmp/verify-passed-tree-}"
+    echo "🛑 pre-push: 'pnpm run verify' has not been run for ${local_sha:0:8} (tree ${tree:0:8}). Run 'pnpm run verify' or 'git push --no-verify'." >&2
+    exit 1
+  fi
+done
+
+exit 0

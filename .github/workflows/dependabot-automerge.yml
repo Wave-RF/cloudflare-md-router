@@ -1,0 +1,30 @@
+name: Dependabot auto-merge
+
+# Patch/minor Dependabot bumps auto-approve + enable auto-merge (CI still gates
+# the actual merge via branch protection). Major bumps are held for human review.
+# Uses only GITHUB_TOKEN + the official dependabot/fetch-metadata action.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3 # pin to a SHA when convenient
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge for patch/minor
+        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' }}
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # --auto merges once the required status checks pass (branch protection).
+        run: gh pr merge --auto --squash "$PR_URL"

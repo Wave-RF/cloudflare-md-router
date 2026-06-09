@@ -25,7 +25,7 @@ export interface MdRouterOptions {
 
 const defaultMdPathFor = (pathname: string): string => {
   const trimmed = pathname.replace(/\/$/, "");
-  return (trimmed || "/index") + ".md";
+  return `${trimmed || "/index"}.md`;
 };
 
 /** Build a Cloudflare Workers fetch handler that serves the `.md` twin of
@@ -53,7 +53,7 @@ const defaultMdPathFor = (pathname: string): string => {
  *  ```
  */
 export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
-  options: MdRouterOptions = {},
+  options: MdRouterOptions = {}
 ): ExportedHandler<Env> {
   const botUa = options.botUserAgents ?? LLM_BOT_UA;
   const mdPathFor = options.mdPathFor ?? defaultMdPathFor;
@@ -70,12 +70,14 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
 
       const accept = request.headers.get("Accept") ?? "";
       const ua = request.headers.get("User-Agent") ?? "";
-      const wantsMarkdown =
-        acceptTokens.some((tok) => accept.includes(tok)) || botUa.test(ua);
+      const wantsMarkdown = acceptTokens.some((tok) => accept.includes(tok)) || botUa.test(ua);
 
       if (!wantsMarkdown) {
         const response = await env.ASSETS.fetch(request);
-        const contentType = (response.headers.get("Content-Type") ?? "").toLowerCase().split(';')[0].trim();
+        const contentType = (response.headers.get("Content-Type") ?? "")
+          .toLowerCase()
+          .split(";")[0]
+          .trim();
         const isHtml = contentType === "text/html";
         if (!advertiseTwin || response.status !== 200 || !isHtml) {
           return response;
@@ -85,20 +87,15 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
         // valid per RFC 8288 (resolved against the request URL).
         const withTwin = new Response(response.body, response);
         const encodedPath = mdPathFor(url.pathname)
-          .split('/')
-          .map(segment => encodeURIComponent(segment))
-          .join('/');
-        withTwin.headers.append(
-          "Link",
-          `<${encodedPath}>; rel="alternate"; type="text/markdown"`,
-        );
+          .split("/")
+          .map((segment) => encodeURIComponent(segment))
+          .join("/");
+        withTwin.headers.append("Link", `<${encodedPath}>; rel="alternate"; type="text/markdown"`);
         return withTwin;
       }
 
       const mdPath = mdPathFor(url.pathname);
-      const mdResponse = await env.ASSETS.fetch(
-        new Request(new URL(mdPath, url.origin), request),
-      );
+      const mdResponse = await env.ASSETS.fetch(new Request(new URL(mdPath, url.origin), request));
 
       return mdResponse.status === 404 ? env.ASSETS.fetch(request) : mdResponse;
     },

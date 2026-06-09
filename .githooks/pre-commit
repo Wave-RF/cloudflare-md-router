@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Runs `pnpm run verify` (biome check + node --test) unless scripts/ci-marker.sh
+# says it already passed for the current tree (cached marker). Universal — applies
+# to humans and Claude Code alike. Bypass: `git commit --no-verify`.
+#
+# Installed by `pnpm run setup` (git config core.hooksPath .githooks).
+
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+if scripts/ci-marker.sh has-marker 2>/dev/null; then
+  echo "✔ pre-commit: verify already passed for this tree (cached)" >&2
+  exit 0
+fi
+
+# `pnpm run verify` writes the tree marker on success (its tail step).
+pnpm run verify || { echo "🛑 pre-commit: 'pnpm run verify' failed." >&2; exit 1; }

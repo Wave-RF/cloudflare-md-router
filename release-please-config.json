@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true
+    }
+  },
+  "$comment": "Single root package. During 0.x: breaking (feat!/BREAKING CHANGE) -> minor, feat/fix -> patch, so `^0.x` consumers auto-get features+fixes and are shielded from breaking changes. include-component-in-tag:false keeps tags as vX.Y.Z (the repo has no tags yet; the first release-please tag will be vX.Y.Z). To graduate to 1.0.0, land a commit with `Release-As: 1.0.0` in its body."
+}

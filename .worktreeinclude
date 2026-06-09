@@ -1,0 +1,3 @@
+# Gitignored paths seeded into a new `wt` worktree from main (see .config/wt.toml).
+# Keeping node_modules/ means a fresh worktree doesn't re-download deps.
+node_modules/
