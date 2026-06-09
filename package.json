@@ -62,6 +62,6 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
     "@cloudflare/workers-types": "^4.20240208.0",
-    "typescript": "^5.6.0"
+    "typescript": "^6.0.3"
   }
 }
