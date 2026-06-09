@@ -21,6 +21,17 @@ export interface MdRouterOptions {
    *  `text/html` reply to an extension-less GET); the `.md` and pass-through
    *  responses are untouched. Default: `true`. */
   advertiseTwin?: boolean;
+  /** Append `Vary: Accept` to the responses this worker negotiates on the
+   *  `Accept` header (the `.md` twin, the HTML fallback when the twin is
+   *  missing, and the normal HTML page), so a shared cache keyed only on the
+   *  URL doesn't serve the HTML representation to a client that asked for
+   *  markdown — or vice-versa (RFC 9110 §12.5.5). Merges with any existing
+   *  `Vary` rather than replacing it; verbatim pass-through responses (non-GET,
+   *  extension-bearing paths) are left untouched. Only `Accept` is listed:
+   *  `User-Agent` is also a routing input, but `Vary: User-Agent` defeats
+   *  shared caching (huge UA cardinality), so it is intentionally omitted.
+   *  Default: `false`. */
+  vary?: boolean;
 }
 
 const defaultMdPathFor = (pathname: string): string => {
@@ -36,7 +47,10 @@ const defaultMdPathFor = (pathname: string): string => {
  *  Pass through unchanged for non-GET, requests with a file extension,
  *  and "normal" browser requests — though the normal HTML page response also
  *  gets a `Link` header advertising its `.md` twin unless `advertiseTwin` is
- *  disabled (see {@link MdRouterOptions.advertiseTwin}).
+ *  disabled (see {@link MdRouterOptions.advertiseTwin}). Opt into a
+ *  `Vary: Accept` header on the `Accept`-negotiated responses with
+ *  {@link MdRouterOptions.vary} so shared caches don't cross-serve the two
+ *  representations.
  *
  *  Requires an `ASSETS` Fetcher binding in your `wrangler.jsonc`:
  *  ```jsonc
@@ -59,6 +73,19 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
   const mdPathFor = options.mdPathFor ?? defaultMdPathFor;
   const acceptTokens = ["text/markdown", ...(options.acceptMarkdown ?? [])];
   const advertiseTwin = options.advertiseTwin ?? true;
+  const vary = options.vary ?? false;
+
+  // Append `Vary: Accept` to a negotiated response when `vary` is enabled.
+  // Wraps via `new Response(body, response)` because an asset response's
+  // headers are immutable; `append` (not `set`) preserves any existing `Vary`.
+  const withVary = (response: Response): Response => {
+    if (!vary) {
+      return response;
+    }
+    const varied = new Response(response.body, response);
+    varied.headers.append("Vary", "Accept");
+    return varied;
+  };
 
   return {
     async fetch(request, env): Promise<Response> {
@@ -80,7 +107,7 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
           .trim();
         const isHtml = contentType === "text/html";
         if (!advertiseTwin || response.status !== 200 || !isHtml) {
-          return response;
+          return withVary(response);
         }
         // `new Response(body, response)` is the only way to add a header to an
         // otherwise-immutable asset response. A relative URI-Reference target is
@@ -91,13 +118,19 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
           .map((segment) => encodeURIComponent(segment))
           .join("/");
         withTwin.headers.append("Link", `<${encodedPath}>; rel="alternate"; type="text/markdown"`);
+        // Already a mutable wrapper — append `Vary` here rather than re-wrapping.
+        if (vary) {
+          withTwin.headers.append("Vary", "Accept");
+        }
         return withTwin;
       }
 
       const mdPath = mdPathFor(url.pathname);
       const mdResponse = await env.ASSETS.fetch(new Request(new URL(mdPath, url.origin), request));
 
-      return mdResponse.status === 404 ? env.ASSETS.fetch(request) : mdResponse;
+      return mdResponse.status === 404
+        ? withVary(await env.ASSETS.fetch(request))
+        : withVary(mdResponse);
     },
   };
 }
