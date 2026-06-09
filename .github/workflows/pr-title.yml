@@ -1,0 +1,38 @@
+name: PR title
+
+# Validates the PR title against Conventional Commits — the SAME rule the local
+# agent gate checks (scripts/lint-pr-title.sh is the single source of truth), and
+# the title becomes the squash-merge commit subject that release-please parses
+# for the version bump. Required check (see scripts/setup-repo.sh).
+#
+# pull_request_target runs in the BASE repo's context, so the trusted base copy
+# of scripts/lint-pr-title.sh runs (not a fork's). The title is passed via env,
+# never interpolated into the shell, so a crafted title can't inject commands.
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Validate PR title (Conventional Commits)
+        # Dependabot's titles aren't author-controlled: they use a capital subject
+        # ("ci: Bump …") and grouped lengths over the cap. Its prefix is already a
+        # valid Conventional-Commit type, so trust the bot and skip the check for
+        # it (the step skips → the job still succeeds → the required check is green).
+        if: ${{ github.event.pull_request.user.login != 'dependabot[bot]' }}
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: bash scripts/lint-pr-title.sh "$TITLE"

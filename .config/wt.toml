@@ -1,0 +1,19 @@
+# Project config for Worktrunk (`wt`) — committed; per-user overrides live in
+# ~/.config/worktrunk/config.toml. `.worktreeinclude` (repo root) controls which
+# gitignored paths get seeded into a new worktree from main, so `wt switch
+# --create <branch>` lands ready to work.
+
+[post-start]
+# Seed node_modules/ from main (per .worktreeinclude) so the install below is a
+# fast no-op when deps are unchanged, then install hooks for this worktree.
+copy-caches = "wt step copy-ignored"
+deps        = "pnpm install --no-frozen-lockfile"
+hooks       = "pnpm run setup"
+
+[pre-merge]
+# Same gate as the pre-commit/pre-push hooks and CI.
+verify = "pnpm run verify"
+
+[pre-remove]
+# Surface anything uncommitted before a worktree is torn down.
+status = "git status --short"

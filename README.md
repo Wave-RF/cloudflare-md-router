@@ -27,10 +27,10 @@ The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBo
 ## Install
 
 ```sh
-pnpm add github:Wave-RF/cloudflare-md-router
-# or pin to a tag / commit:
-# pnpm add github:Wave-RF/cloudflare-md-router#v0.1.0
+pnpm add @wave-rf/cloudflare-md-router
 ```
+
+This package ships raw TypeScript with no build step — bundle it with Wrangler/esbuild (the Cloudflare Workers default), which resolve the `.ts` entry points directly.
 
 ## Use
 
@@ -38,7 +38,7 @@ The simplest setup — re-export the default handler from your worker entrypoint
 
 ```ts
 // worker/index.ts
-export { default } from "cloudflare-md-router/worker";
+export { default } from "@wave-rf/cloudflare-md-router/worker";
 ```
 
 Configure your `wrangler.jsonc` with an ASSETS binding pointing at your built static site:
@@ -66,7 +66,7 @@ Use `createMdRouter()` if you need to extend the bot list, change the `.md` path
 
 ```ts
 // worker/index.ts
-import { createMdRouter, LLM_BOT_UA } from "cloudflare-md-router";
+import { createMdRouter, LLM_BOT_UA } from "@wave-rf/cloudflare-md-router";
 
 export default createMdRouter({
   // Add your own bots:

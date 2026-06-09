@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # npm dependencies — grouped into one PR per week so the queue stays small.
+  # Prefix `deps` keeps the PR title Conventional-Commits-valid (the required
+  # `pr-title` check); Dependabot is exempt from the 72-char cap in the check.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm:
+        patterns: ["*"]
+    commit-message:
+      prefix: deps
+
+  # GitHub Actions — keep the pinned action versions current. Prefix `ci`.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
