@@ -75,7 +75,8 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
 
       if (!wantsMarkdown) {
         const response = await env.ASSETS.fetch(request);
-        const isHtml = (response.headers.get("Content-Type") ?? "").toLowerCase().includes("text/html");
+        const contentType = (response.headers.get("Content-Type") ?? "").toLowerCase().split(';')[0].trim();
+        const isHtml = contentType === "text/html";
         if (!advertiseTwin || response.status !== 200 || !isHtml) {
           return response;
         }
