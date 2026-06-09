@@ -12,7 +12,15 @@ If you're building a docs site that already emits a per-page raw-markdown twin (
 | Non-GET                                        | Pass-through to ASSETS |
 | `Accept: text/markdown`                        | `<path>.md` (HTML fallback on 404) |
 | `User-Agent` matches a known LLM bot           | `<path>.md` (HTML fallback on 404) |
-| Everything else                                | Pass-through (HTML) |
+| Everything else                                | HTML page — plus a `Link` header advertising its `.md` twin |
+
+On the normal HTML page response, the worker also adds an [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) `Link` header so an agent can discover the markdown twin from a plain GET, without sniffing the User-Agent or guessing the right `Accept`:
+
+```http
+Link: </foo/bar.md>; rel="alternate"; type="text/markdown"
+```
+
+This is on by default (only for a `200 text/html` reply to an extension-less GET); disable it with `advertiseTwin: false`.
 
 The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-Web, anthropic-ai, PerplexityBot, CCBot, Applebot-Extended, Google-Extended, cohere-ai, Bytespider, Diffbot. See `src/bots.ts`.
 
@@ -69,6 +77,9 @@ export default createMdRouter({
 
   // Custom .md path strategy. Default: `/foo/` → `/foo.md`, `/` → `/index.md`.
   mdPathFor: (pathname) => `/markdown${pathname.replace(/\/$/, "")}.md`,
+
+  // Don't advertise the `.md` twin via a `Link` header (default: true).
+  advertiseTwin: false,
 });
 ```
 

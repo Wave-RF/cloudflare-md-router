@@ -14,6 +14,13 @@ export interface MdRouterOptions {
   /** Extra Accept-header tokens that should also trigger markdown
    *  routing. `text/markdown` is always matched. */
   acceptMarkdown?: string[];
+  /** Advertise each HTML page's `.md` twin via an RFC 8288 `Link` response
+   *  header (`Link: <…/foo.md>; rel="alternate"; type="text/markdown"`), so an
+   *  agent can discover the twin from a plain GET — no UA match or `Accept`
+   *  guess needed. Applies only to the normal HTML page response (a `200`
+   *  `text/html` reply to an extension-less GET); the `.md` and pass-through
+   *  responses are untouched. Default: `true`. */
+  advertiseTwin?: boolean;
 }
 
 const defaultMdPathFor = (pathname: string): string => {
@@ -27,7 +34,9 @@ const defaultMdPathFor = (pathname: string): string => {
  *  `.md` twin doesn't exist (404).
  *
  *  Pass through unchanged for non-GET, requests with a file extension,
- *  and "normal" browser requests.
+ *  and "normal" browser requests — though the normal HTML page response also
+ *  gets a `Link` header advertising its `.md` twin unless `advertiseTwin` is
+ *  disabled (see {@link MdRouterOptions.advertiseTwin}).
  *
  *  Requires an `ASSETS` Fetcher binding in your `wrangler.jsonc`:
  *  ```jsonc
@@ -49,6 +58,7 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
   const botUa = options.botUserAgents ?? LLM_BOT_UA;
   const mdPathFor = options.mdPathFor ?? defaultMdPathFor;
   const acceptTokens = ["text/markdown", ...(options.acceptMarkdown ?? [])];
+  const advertiseTwin = options.advertiseTwin ?? true;
 
   return {
     async fetch(request, env): Promise<Response> {
@@ -64,7 +74,25 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
         acceptTokens.some((tok) => accept.includes(tok)) || botUa.test(ua);
 
       if (!wantsMarkdown) {
-        return env.ASSETS.fetch(request);
+        const response = await env.ASSETS.fetch(request);
+        const contentType = (response.headers.get("Content-Type") ?? "").toLowerCase().split(';')[0].trim();
+        const isHtml = contentType === "text/html";
+        if (!advertiseTwin || response.status !== 200 || !isHtml) {
+          return response;
+        }
+        // `new Response(body, response)` is the only way to add a header to an
+        // otherwise-immutable asset response. A relative URI-Reference target is
+        // valid per RFC 8288 (resolved against the request URL).
+        const withTwin = new Response(response.body, response);
+        const encodedPath = mdPathFor(url.pathname)
+          .split('/')
+          .map(segment => encodeURIComponent(segment))
+          .join('/');
+        withTwin.headers.append(
+          "Link",
+          `<${encodedPath}>; rel="alternate"; type="text/markdown"`,
+        );
+        return withTwin;
       }
 
       const mdPath = mdPathFor(url.pathname);

@@ -1,6 +1,6 @@
 {
   "name": "cloudflare-md-router",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cloudflare Worker that serves a `.md` twin of any static page when the request is from a known LLM crawler or explicitly asks for `text/markdown`. Falls back to the HTML response otherwise.",
   "keywords": [
     "cloudflare",
