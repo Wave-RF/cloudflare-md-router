@@ -15,6 +15,7 @@ import {
   execLocalCommand,
   findFreePort,
   gitTrackedFiles,
+  IGNORED,
   matchesName,
   parseArgs,
   parseJsonc,
@@ -529,4 +530,28 @@ test("output dir: a volume reporting inode 0 falls back to paths instead of refu
   check("/site/dist"); // not refused
   assert.throws(() => check("/site/src"), /it is src\//);
   assert.throws(() => check("/site"), /must be a subdirectory/);
+});
+
+test("IGNORED skips Vite 3-5 temp configs and editor droppings, not real source", () => {
+  for (const name of [
+    "vite.config.ts.timestamp-1791568411815-b5b1a705562b8.mjs", // Vite 4-5
+    "vite.config.ts.timestamp-1791568411815.mjs", // Vite 3
+    "vitest.config.mts.timestamp-1791568411815-ab12.cjs",
+    "src/deep/x.config.js.timestamp-1-a.js",
+    ".DS_Store",
+    "src/.page.txt.swp",
+    "4913",
+    "notes.md~",
+  ]) {
+    assert.ok(IGNORED.test(name), `should skip ${name}`);
+  }
+  for (const name of [
+    "vite.config.ts",
+    "src/main.js",
+    "timestamp.js",
+    "src/a.timestamp.js",
+    "vite.config.ts.timestamp-abc.mjs",
+  ]) {
+    assert.ok(!IGNORED.test(name), `should keep ${name}`);
+  }
 });

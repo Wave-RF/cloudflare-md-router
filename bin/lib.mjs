@@ -510,7 +510,8 @@ Usage: cloudflare-md-router dev [options] [-- <extra wrangler dev args>]
                        framework caches (.astro, .svelte-kit, .next, …), and paths below a watched
                        dir that git ignores — unless that watched dir is itself gitignored. Root-
                        level exact names, .env* and names you pass are never git-filtered; the
-                       astro.config.* / vite.config.* globs are (Vite's .timestamp-* temp is skipped).
+                       astro.config.* / vite.config.* globs are. Vite's *.timestamp-<ms>[-<hex>].[cm]js
+                       temp configs are skipped anywhere.
   --no-default-watch   watch only what --watch names
   --port <n>           first port to try (default: $PORT, else ${DEFAULT_PORT}); walks up to ${PORT_TRIES - 1} higher
   --config <file>      wrangler config (default: wrangler.jsonc, wrangler.json, wrangler.toml); must exist
@@ -673,8 +674,9 @@ export function matchesName(names, file) {
   });
 }
 
-/** Editor and tool droppings: macOS Finder, vim swap/backup files, vim's fsync probe, and Vite 5's
- * bundled config (`vite.config.ts.timestamp-<ms>-<hex>.mjs`, written and deleted next to the config
- * on every load — it matches the `vite.config.*` default and would loop). */
+/** Editor and tool droppings, skipped anywhere under a watched path: macOS Finder, vim swap/backup
+ * files, vim's fsync probe, and Vite's bundled temp config `*.timestamp-<ms>[-<hex>].[cm]js` — written and
+ * deleted next to the config on every load by Vite 3-5 (`<ms>` alone in Vite 3, `-<hex>` added in
+ * 4-5); it matches the `vite.config.*` default and would loop. */
 export const IGNORED =
-  /(^|\/)(\.DS_Store|4913|.*\.sw[px]|.*~|.*\.timestamp-\d+-[0-9a-f]+\.[cm]?js)$/;
+  /(^|\/)(\.DS_Store|4913|.*\.sw[px]|.*~|.*\.timestamp-\d+(-[0-9a-f]+)?\.[cm]?js)$/;

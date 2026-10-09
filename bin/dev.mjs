@@ -83,9 +83,10 @@ async function prune(stagingDir, distDir) {
 const hasOutput = (dir) => existsSync(dir) && readdirSync(dir).length > 0;
 
 /** Paths (relative to `root`) minus the ones git ignores — a framework cache such as `.astro/` is
- * written by every build, so under `--watch .` it would trigger the next one. Each path is also
- * asked about as `path/`, because a dir-only pattern (`tmpbuild/`) doesn't match a path that no
- * longer exists (a temp dir the build created and removed). Outside a git work tree, or if git
+ * written by every build, so under `--watch .` it would trigger the next one. A path that no
+ * longer exists, or is a directory, is also asked about as `path/`, because a dir-only pattern
+ * (`tmpbuild/`) doesn't match a path that no longer exists (a temp dir the build created and
+ * removed); an existing regular file is not, so `lib/` never hides a file named `lib`. Outside a git work tree, or if git
  * fails or takes over 2 s, nothing is dropped. */
 export function gitIgnoredFilter(root) {
   const probe = spawnSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], {
