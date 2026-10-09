@@ -9,7 +9,7 @@ pnpm install      # resolve deps (there's no committed lockfile — it's a libra
 pnpm run setup    # one-time: install the git hooks (pre-commit + pre-push)
 ```
 
-The package is pure ESM and ships **raw TypeScript** with no build step — `src/index.ts`, `src/worker.ts`, and `src/bots.ts` are what publish (consumers bundle the `.ts` with Wrangler/esbuild). It runs on the Cloudflare Workers runtime, not Node; `engines.node` (`>=18`) documents the consumer toolchain floor.
+The package is pure ESM and ships **raw TypeScript** with no build step — `src/index.ts`, `src/worker.ts`, and `src/bots.ts` are what publish (consumers bundle the `.ts` with Wrangler/esbuild), plus the Node-only `bin/` dev CLI (`cloudflare-md-router dev`), which `src/` never imports. The Worker code runs on the Cloudflare Workers runtime, not Node; `engines.node` (`>=18`) documents the consumer toolchain floor.
 
 ## Develop
 
@@ -20,7 +20,7 @@ pnpm run format      # auto-fix formatting
 pnpm run verify      # check + typecheck together (the local gate; what the hooks run)
 ```
 
-Biome owns JS/TS/JSON style. There is **no test runner** today — CI is Biome + `tsc --noEmit`. If you add non-trivial routing logic, a test (a stub `ASSETS` Fetcher driving `createMdRouter()`) is encouraged. See [AGENTS.md §Key Invariants](AGENTS.md#key-invariants) for what must stay true (the verbatim pass-through, the markdown-routing trigger, the HTML-fallback-on-404, the opt-in `Link` header, the `wrangler.jsonc` contract).
+Biome owns JS/TS/JSON style. Tests are `node --test` over `test/`, covering the `bin/` dev CLI; CI runs Biome + `tsc --noEmit` + `node --test` + the offline release-config check. The Worker's routing has no tests yet — if you add non-trivial routing logic, a test (a stub `ASSETS` Fetcher driving `createMdRouter()`) is encouraged. See [AGENTS.md §Key Invariants](AGENTS.md#key-invariants) for what must stay true (the verbatim pass-through, the markdown-routing trigger, the HTML-fallback-on-404, the opt-in `Link` header, the `wrangler.jsonc` contract).
 
 ## Pull requests
 

@@ -2,6 +2,8 @@
 
 A tiny Cloudflare Worker that serves the `.md` twin of any static page when the request is from a known LLM crawler or explicitly asks for `text/markdown`. Falls back to the HTML response when the `.md` twin doesn't exist.
 
+It also ships `cloudflare-md-router dev`, a local dev loop that serves real builds through `wrangler dev`, so the Worker's routing works while you edit (see [Dev loop](#dev-loop-cloudflare-md-router-dev)).
+
 If you're building a docs site that already emits a per-page raw-markdown twin (e.g. `/foo/bar` and `/foo/bar.md`), this lets every page do content negotiation transparently — Claude, ChatGPT, Perplexity, etc. fetch the model-friendly version automatically; humans keep getting the styled HTML page.
 
 ## Behavior
@@ -109,7 +111,7 @@ Needs Node 20+ (recursive `fs.watch`; checked at startup, tested in CI on Node 2
 
 | Option | Default |
 | ------ | ------- |
-| `--build <cmd>` (`MD_ROUTER_DEV_BUILD`) | the site's `build` script, via the package manager its lockfile indicates (pnpm, yarn, bun, else npm; the lockfile is searched up the tree, so monorepos work). A custom command runs through the shell with `node_modules/.bin` on `PATH`, so `--build "astro build"` works. |
+| `--build <cmd>` (`MD_ROUTER_DEV_BUILD`) | the site's `build` script, via the package manager its lockfile indicates (pnpm, yarn, bun or npm; the lockfile is searched up the tree, so monorepos work), else the `packageManager` field in `package.json`, else npm. A custom command runs through the shell with `node_modules/.bin` on `PATH`, so `--build "astro build"` works. |
 | `--out-dir <dir>` | `assets.directory` from `wrangler.jsonc` / `wrangler.json` / `wrangler.toml` (JSONC comments and trailing commas are fine), else `dist`. The staging directory is `.dev-<name>` next to it. |
 | `--out-dir-flag <flag>` | `--outDir`: appended to the build as `<flag> <staging>` so it writes to staging, not the served directory. Pass `""` to disable. Put `{outDir}` anywhere in `--build` to place the path yourself (and skip the flag). The staging path (relative to the site root) is also exported as `MD_ROUTER_DEV_OUT_DIR`; a relative `--out-dir` resolves against the wrangler config's directory. |
 | `--watch <path>` | Added to the defaults: `src/`, `public/`, `astro.config.*`, `vite.config.*`, `tsconfig.json`, `package.json`, `.env*`. Directories recurse; other entries are root-level file names (a trailing `*` matches a prefix). Repeatable or comma-separated. `--no-default-watch` drops the defaults. The Worker directory is deliberately not watched — wrangler reloads the Worker itself. |
@@ -118,6 +120,7 @@ Needs Node 20+ (recursive `fs.watch`; checked at startup, tested in CI on Node 2
 | `--root <dir>` | the current directory. |
 | `--strict` (`MD_ROUTER_DEV_STRICT=1`) | off. See below. |
 | `-- <args>` | everything after `--` is passed to `wrangler dev`. |
+| `--help`, `-h` | prints the options and exits. |
 
 Flags win over env. A failed build, and a build that exits 0 but writes nothing, are both handled: the previous good build stays up. On a cold start with no output directory yet, the first build must succeed or the command exits 1.
 

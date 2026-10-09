@@ -12,11 +12,11 @@ squash-merge subject semantic-release parses for the version bump):
 
 ## Test plan
 
-<!-- How you verified it. `pnpm run verify` (Biome + tsc --noEmit) at minimum. -->
+<!-- How you verified it. `pnpm run verify` (Biome + tsc --noEmit + tests + release-config check) at minimum. -->
 
 ## Checklist
 
-- [ ] `pnpm run verify` passes locally (Biome + `tsc --noEmit`)
+- [ ] `pnpm run verify` passes locally (Biome + `tsc --noEmit` + `node --test` + the offline release-config check)
 - [ ] Public surface changes (`MdRouterOptions` options, exports like `createMdRouter`/`mdRouter`/`LLM_BOT_UA`) are reflected in the `src/` JSDoc **and** `README.md`
 - [ ] Changed routing invariants (the pass-through rules, the `.md`-twin/HTML-fallback behavior, the `Link`-header advertisement, the bot list) are noted in `README.md`
 - [ ] Changes preserve the documented `wrangler.jsonc` contract (the `ASSETS` binding + `run_worker_first`)

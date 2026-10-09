@@ -6,7 +6,7 @@ Context for AI coding agents (Claude Code, Copilot, Cursor, etc.) working on thi
 
 The non-negotiables, ordered by how often agents miss them. These override convenience: if a rule blocks you, satisfy it; don't work around it.
 
-1. **Validate locally before every push** — `pnpm run verify` (Biome + `tsc --noEmit`). Don't use CI as your first feedback loop ([§Local-First Validation](#local-first-validation)).
+1. **Validate locally before every push** — `pnpm run verify` (Biome + `tsc --noEmit` + `node --test` + the offline release-config check). Don't use CI as your first feedback loop ([§Local-First Validation](#local-first-validation)).
 2. **A PR-branch push needs every pre-push reviewer satisfied** — run **`/prepush`**: it reads `scripts/pre-push-reviewers.sh`, runs the reviewers the change needs in parallel (fresh context), skips the rest *on the record*, and loops until each it ran returns `ship_it` ([§Agent PR Discipline](#agent-pr-discipline)).
 3. **Every public-surface change updates its docs in the same PR** — a changed `MdRouterOptions` option / export / default / the `LLM_BOT_UA` bot list / the `wrangler.jsonc` contract must update the **`src/` JSDoc** **and** `README.md` ([§Documentation Sync](#documentation-sync)). Release notes are **generated into GitHub Releases** (`CHANGELOG.md` is frozen history) — don't hand-edit it; just use the right Conventional-Commit type, because it decides whether the merge releases ([§Release Process](#release-process)).
 4. **Address and resolve every review finding** — fix it or track it in an issue; never silently drop one ([§Review Response](#review-response)).
@@ -18,7 +18,7 @@ The non-negotiables, ordered by how often agents miss them. These override conve
 
 A tiny, **pure-ESM** Cloudflare Worker for **request-time content negotiation** on a static site. When a request looks like an LLM fetcher — a known crawler `User-Agent` (`LLM_BOT_UA`) or an explicit `Accept: text/markdown` — it serves the page's **`.md` twin** (e.g. `/foo/bar/` → `/foo/bar.md`) from the `ASSETS` static-assets binding, falling back to the original HTML response if the twin 404s. For "normal" requests it returns the HTML page and, by default, annotates it with an RFC 8288 `Link` header advertising the `.md` twin so an agent can discover it from a plain GET.
 
-There is **no build step**: the package ships **raw TypeScript** — `src/index.ts` (the public re-export barrel), `src/worker.ts` (the whole implementation), and `src/bots.ts` (the crawler regex). Consumers bundle the `.ts` with Wrangler/esbuild (`exports` point straight at the `.ts` files; `tsconfig` uses `allowImportingTsExtensions` + `verbatimModuleSyntax`). The code runs on the **Workers runtime**, not Node — no Node built-ins.
+There is **no build step**: the package ships **raw TypeScript** — `src/index.ts` (the public re-export barrel), `src/worker.ts` (the whole implementation), and `src/bots.ts` (the crawler regex). Consumers bundle the `.ts` with Wrangler/esbuild (`exports` point straight at the `.ts` files; `tsconfig` uses `allowImportingTsExtensions` + `verbatimModuleSyntax`). The Worker code runs on the **Workers runtime**, not Node — no Node built-ins. The one exception is the Node-only `bin/` dev CLI (`cloudflare-md-router dev`), which ships too but is never imported by `src/` (invariant 8).
 
 `createMdRouter(options)` returns a Workers `ExportedHandler`; `mdRouter` (and the default export) is the zero-config instance. `LLM_BOT_UA` is the default crawler regex, exported so consumers can compose their own.
 
@@ -52,7 +52,7 @@ The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `t
 
 ## Local-First Validation
 
-**Validate locally before pushing.** `pnpm run verify` runs the same gates as CI (Biome + `tsc --noEmit`). On success it writes the tree-keyed marker `tmp/verify-passed-tree-<TREE>` (`tmp/` is gitignored).
+**Validate locally before pushing.** `pnpm run verify` runs the same gates as CI (Biome + `tsc --noEmit` + `node --test` + the offline release-config check). On success it writes the tree-keyed marker `tmp/verify-passed-tree-<TREE>` (`tmp/` is gitignored).
 
 Enforced via git hooks (installed by `pnpm run setup`; apply to humans and agents alike):
 
