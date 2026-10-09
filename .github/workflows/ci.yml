@@ -49,3 +49,6 @@ jobs:
 
       - name: Typecheck (tsc --noEmit)
         run: pnpm run typecheck
+
+      - name: Test (node --test)
+        run: pnpm run test

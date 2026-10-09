@@ -24,7 +24,7 @@ There is **no build step**: the package ships **raw TypeScript** — `src/index.
 
 ## Key Invariants
 
-What must stay true. Preserve the named invariant when you touch its code. The repo has **no automated test suite** yet (CI is `biome check` + `tsc --noEmit`), so these invariants are guarded by review, not by tests — if you add non-trivial routing logic, adding a test (a stub `ASSETS` Fetcher) is encouraged.
+What must stay true. Preserve the named invariant when you touch its code. The Worker's routing has **no automated tests** yet (only the `bin/` dev CLI is tested), so these invariants are guarded by review, not by tests — if you add non-trivial routing logic, adding a test (a stub `ASSETS` Fetcher) is encouraged.
 
 1. **Pass-through is verbatim.** Non-GET requests, any pathname matching the file-extension guard (`/\.[a-zA-Z0-9]+$/`), and "normal" requests that don't want markdown are forwarded to `env.ASSETS.fetch(request)` unchanged. The worker must never alter a pass-through **body**, and apart from the opt-in `Link` header it must not alter status or other headers.
 2. **Markdown-routing trigger** = `acceptTokens.some(tok => accept.includes(tok)) || botUserAgents.test(ua)`, where `acceptTokens` **always** contains `"text/markdown"` (consumer tokens via `acceptMarkdown` are *added*, never replace it) and `botUserAgents` defaults to the **case-insensitive** `LLM_BOT_UA`. Don't drop the always-on `text/markdown`, make the UA match case-sensitive, or over-match.
@@ -44,10 +44,11 @@ pnpm run typecheck      # tsc --noEmit (strict)
 pnpm run check          # biome check . (lint + format check) — the CI gate
 pnpm run format         # biome format --write . (auto-fix formatting)
 pnpm run lint           # biome lint .
-pnpm run verify         # biome check . && pnpm run typecheck, then write the tree marker
+pnpm run test           # node --test (the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test)
+pnpm run verify         # biome check . && pnpm run typecheck && pnpm run test, then write the tree marker
 ```
 
-There is **no test runner** — CI is Biome + `tsc --noEmit`. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.
+The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `tsc --noEmit` + those. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.
 
 ## Local-First Validation
 
@@ -132,6 +133,7 @@ Every change to the public surface updates its docs in the same PR:
 | Change a routing invariant (pass-through rules, fallback, the `Link` header) | `README.md` (behavior table + the relevant note), the `src/` JSDoc |
 | Change the `LLM_BOT_UA` bot list | `src/bots.ts`, `README.md` (the enumerated bot list) |
 | Change the package name / `exports` / `engines` / peer deps / the `wrangler.jsonc` contract | `README.md` (Install + Use), `package.json` |
+| Add/modify a `cloudflare-md-router dev` option, env var, or default | `bin/lib.mjs` (`HELP` + code), `README.md` (Dev loop table) |
 | Any change | a Conventional-Commit message (release-please writes `CHANGELOG.md`) |
 
 Before finishing, grep the identifiers you touched (option names, export names, bot names) across `README.md` and `src/` to catch staleness. Prose quality + code↔docs sync are gated by the `docs-reviewer`.
@@ -146,6 +148,8 @@ This repo is set up for [Worktrunk](https://github.com/) (`wt`, config in `.conf
 src/index.ts            → public re-export barrel (the API entry; ships)
 src/worker.ts           → the whole implementation: createMdRouter + mdRouter + the MdRouter* types (ships)
 src/bots.ts             → LLM_BOT_UA, the default crawler User-Agent regex (ships)
+bin/cli.mjs, dev.mjs, lib.mjs → the `cloudflare-md-router dev` CLI (ships; plain Node ESM, Node built-ins only; Node, NOT Workers — `src/` must never import `bin/`)
+test/                   → node --test suite for bin/ (pure helpers + fixture-site smoke test; no network)
 tsconfig.json           → strict, ESNext, Bundler resolution, allowImportingTsExtensions (the typecheck gate)
 scripts/                → shell + node tooling (PR-title lint, reviewer manifest, markers, dev-version, repo setup)
 .githooks/              → universal pre-commit + pre-push (installed via pnpm run setup)

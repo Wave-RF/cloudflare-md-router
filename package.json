@@ -31,6 +31,9 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "bin": {
+    "cloudflare-md-router": "./bin/cli.mjs"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./worker": "./src/worker.ts",
@@ -38,6 +41,7 @@
   },
   "files": [
     "src",
+    "bin",
     "README.md",
     "LICENSE"
   ],
@@ -53,8 +57,9 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check .",
-    "verify": "biome check . && pnpm run typecheck && bash scripts/ci-marker.sh write",
-    "setup": "git config core.hooksPath .githooks"
+    "verify": "biome check . && pnpm run typecheck && pnpm run test && bash scripts/ci-marker.sh write",
+    "setup": "git config core.hooksPath .githooks",
+    "test": "node --test"
   },
   "peerDependencies": {
     "@cloudflare/workers-types": ">=4.0.0"
