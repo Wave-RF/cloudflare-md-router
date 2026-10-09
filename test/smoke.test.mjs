@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ChildSet, syncDirs } from "../bin/dev.mjs";
+import { ChildSet, gitIgnoredFilter, syncDirs } from "../bin/dev.mjs";
 
 const CLI = fileURLToPath(new URL("../bin/cli.mjs", import.meta.url));
 const TIMEOUT = { timeout: 60_000 };
@@ -67,6 +67,12 @@ else {
     mkdirSync(process.env.FIXTURE_CACHE, { recursive: true });
     writeFileSync(process.env.FIXTURE_CACHE + "/types.d.ts", String(Date.now()));
     if (process.env.FIXTURE_CACHE_RM) rmSync(process.env.FIXTURE_CACHE, { recursive: true });
+  }
+  // Like Vite 5 loading vite.config.ts: a bundled temp config next to it, written then deleted.
+  if (process.env.FIXTURE_VITE) {
+    const tmp = "vite.config.ts.timestamp-" + Date.now() + "-" + Math.random().toString(16).slice(2) + ".mjs";
+    writeFileSync(tmp, "export default {}");
+    rmSync(tmp);
   }
   mkdirSync(out + "/sub", { recursive: true });
   writeFileSync(out + "/index.html", src);
@@ -446,3 +452,44 @@ syncBuiltinESMExports();
     assertAllGone(site);
   }
 );
+
+for (const git of [false, true]) {
+  test(
+    `Vite 5's temp config next to vite.config.ts does not loop (${git ? "git, not ignored" : "no git"})`,
+    TIMEOUT,
+    async (t) => {
+      const site = makeSite();
+      writeFileSync(join(site.root, "vite.config.ts"), "export default {}");
+      if (git) assert.equal(spawnSync("git", ["init", "-q", site.root]).status, 0);
+      const dev = startDev(t, site, ["--build", "node build.mjs"], { FIXTURE_VITE: "1" });
+      await until(() => has(site, "wrangler.pid"), "wrangler to start");
+      const builds = () => read(site, "build.pids").trim().split("\n").length;
+      writeFileSync(join(site.root, "src/page.txt"), "v2");
+      await until(() => existsSync(join(site.out, "sub", "v2.html")), "v2 to land");
+      await sleep(2000);
+      assert.equal(builds(), 2, `startup + one edit, got ${builds()}:\n${dev.log()}`);
+      dev.child.kill("SIGINT");
+      assert.equal(await dev.exited, 0);
+      assertAllGone(site);
+    }
+  );
+}
+
+test("gitIgnoredFilter: dir-only patterns match vanished dirs, never an existing regular file", (t) => {
+  if (spawnSync("git", ["--version"]).status !== 0) {
+    t.skip("git is not installed");
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), "mdr-ign-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, ".gitignore"), "lib/\ntmpbuild/\n");
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src/lib"), "a regular file named like a dir-only pattern");
+  assert.equal(spawnSync("git", ["init", "-q", root]).status, 0);
+  const keep = gitIgnoredFilter(root);
+  // tmpbuild/ no longer exists (the build removed it); src/lib is a file, which `lib/` doesn't match.
+  assert.deepEqual(keep(["src/lib", "tmpbuild", "tmpbuild/x.js", "src/page.txt"]), [
+    "src/lib",
+    "src/page.txt",
+  ]);
+});

@@ -37,8 +37,8 @@ const GRACE_MS = 5000;
 const REAP_MS = 2000;
 const POSIX = process.platform !== "win32";
 /** Never a build input, and written to by the build, wrangler, git or a framework's cache (Astro
- * writes `.astro/types.d.ts` on every build): watching them loops. The fallback for sites outside
- * git; inside git, anything git ignores is skipped too (see `gitIgnoredFilter`). */
+ * writes `.astro/types.d.ts` on every build): watching them loops. Always skipped, git or not. In a
+ * git work tree, gitignored paths are skipped too, except the inputs the user named: see `flush`. */
 const NOISE_DIRS =
   /(^|[\\/])(node_modules|\.git|\.wrangler|\.astro|\.svelte-kit|\.next|\.nuxt|\.output|\.cache|\.turbo|\.vercel|\.parcel-cache)([\\/]|$)/;
 
@@ -96,7 +96,16 @@ export function gitIgnoredFilter(root) {
   if (probe.status !== 0 || probe.stdout.trim() !== "true") return (files) => files;
   return (files) => {
     if (files.length === 0) return files;
-    const queries = files.flatMap((f) => [f, `${f}/`]);
+    // `f/` only where f could be a directory: for an existing regular file it would match a
+    // dir-only pattern (`lib/`) that git itself does not apply to that file.
+    const isFile = (f) => {
+      try {
+        return !statSync(join(root, f)).isDirectory();
+      } catch {
+        return false;
+      }
+    };
+    const queries = files.flatMap((f) => (isFile(f) ? [f] : [f, `${f}/`]));
     const r = spawnSync("git", ["-C", root, "check-ignore", "--stdin", "-z"], {
       input: `${queries.join("\0")}\0`,
       encoding: "utf8",
@@ -358,10 +367,10 @@ export async function dev(opts) {
     building = false;
   }
 
-  // Changes are batched per debounce window. A path strictly below a watched directory that git
-  // ignores (a framework cache the build itself writes) is dropped before it may trigger a build.
-  // Never filtered: root-level name matches (`.env` is gitignored almost everywhere, yet a default
-  // trigger) and anything under a watched directory that is itself gitignored (`--watch content`
+  // Changes are batched per debounce window. A path that git ignores (a framework cache the build
+  // itself writes) is dropped before it may trigger a build, except: root-level matches of an exact
+  // name, `.env*` or a name the user passed (`.env` is gitignored almost everywhere, yet a default
+  // trigger), and anything under a watched directory that is itself gitignored (`--watch content`
   // where content/ is ignored) — the user asked for those explicitly.
   const pending = new Map(); // path → may be git-filtered
   const notIgnored = gitIgnoredFilter(opts.root);
@@ -410,12 +419,18 @@ export async function dev(opts) {
         })
       );
     }
+    // Root-level names that skip the git filter: exact names, `.env*` (gitignored almost everywhere,
+    // yet an input), and anything the user passed. A prefix-glob default like `vite.config.*` still
+    // goes through it, since tools drop gitignored temp files next to their config.
+    const explicitName = (n) => !n.endsWith("*") || n === ".env*" || opts.userWatch?.includes(n);
     // Root-level files: a non-recursive watch on the directory survives editors that replace files
     // on save (watching a file itself would not).
     if (names.length > 0) {
       watchers.push(
         watch(opts.root, (_event, file) => {
-          if (file && !IGNORED.test(file) && matchesName(names, file)) onChange(file, false);
+          if (file && !IGNORED.test(file) && matchesName(names, file)) {
+            onChange(file, !names.some((n) => matchesName([n], file) && explicitName(n)));
+          }
         })
       );
     }
