@@ -44,7 +44,7 @@ pnpm run typecheck      # tsc --noEmit (strict)
 pnpm run check          # biome check . (lint + format check) — the CI gate
 pnpm run format         # biome format --write . (auto-fix formatting)
 pnpm run lint           # biome lint .
-pnpm run test           # node --test (the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test)
+pnpm run test           # node --test (the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test that asserts no child outlives the CLI)
 pnpm run verify         # biome check . && pnpm run typecheck && pnpm run test, then write the tree marker
 ```
 
@@ -154,7 +154,7 @@ src/index.ts            → public re-export barrel (the API entry; ships)
 src/worker.ts           → the whole implementation: createMdRouter + mdRouter + the MdRouter* types (ships)
 src/bots.ts             → LLM_BOT_UA, the default crawler User-Agent regex (ships)
 bin/cli.mjs, dev.mjs, lib.mjs → the `cloudflare-md-router dev` CLI (ships; plain Node ESM, Node built-ins only; Node, NOT Workers — `src/` must never import `bin/`)
-test/                   → node --test suite for bin/ (pure helpers + fixture-site smoke test; no network)
+test/                   → node --test suite for bin/ (pure helpers + fixture-site smoke test, run under npm and pnpm; no network)
 tsconfig.json           → strict, ESNext, Bundler resolution, allowImportingTsExtensions (the typecheck gate)
 scripts/                → shell + node tooling (PR-title lint, reviewer manifest, markers, release-config check, repo setup)
 .githooks/              → universal pre-commit + pre-push (installed via pnpm run setup)

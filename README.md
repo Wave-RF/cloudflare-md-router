@@ -95,7 +95,7 @@ export default createMdRouter({
 
 `astro dev` (or any framework dev server) skips everything the Worker adds in production: the `.md` twins, the `Link` header, and any outputs that only exist in a real build. If your Worker serves something the dev server can't, use this instead of it. If the Worker adds nothing you are iterating on, keep using the dev server — it has HMR and an error overlay; this does not.
 
-The command runs a **full build on every save** into a staging directory, copies it into your output directory **only if the build succeeded**, and serves that directory through `wrangler dev --live-reload`. A failed build (or the emptied-output window during one) never reaches the browser: you keep the last good build, with a red banner and a terminal bell. Ctrl-C stops both the build and wrangler. Each save costs a real build, with errors in the terminal rather than the page.
+The command runs a **full build on every save** into a staging directory, copies it into your output directory **only if the build succeeded**, and serves that directory through `wrangler dev --live-reload`. A failed build (or the emptied-output window during one) never reaches the browser: you keep the last good build, with a red banner and a terminal bell. Ctrl-C stops the build (its whole process tree) and wrangler, with SIGTERM and then SIGKILL after 5 s, and the command does not exit until they are gone. Each save costs a real build, with errors in the terminal rather than the page.
 
 ```sh
 pnpm add -D @wave-rf/cloudflare-md-router wrangler
@@ -107,22 +107,22 @@ pnpm exec cloudflare-md-router dev
 { "scripts": { "dev:worker": "cloudflare-md-router dev" } }
 ```
 
-Needs Node 20+ (recursive `fs.watch`; checked at startup, tested in CI on Node 24 only; POSIX is the supported platform, Windows is best-effort) and a locally-installed `wrangler` — it is run through your package manager and never downloaded. Add the staging directory (`.dev-<outDir>`, so `.dev-dist/` by default) to `.gitignore`.
+Needs Node 20+ (recursive `fs.watch`; checked at startup, tested in CI on Node 24 only; POSIX is the supported platform, Windows is best-effort) and a locally-installed `wrangler`. It is never downloaded: the site's own `wrangler` package is resolved the way `require` would (so a workspace-root install works) and its `bin` is run directly with Node, with no package manager or shell in between to swallow Ctrl-C. If the package can't be resolved (Yarn PnP, or not installed) it falls back to your package manager's local exec (`pnpm exec`, `npm exec --no`, `yarn`, `bun x --no-install`). That fallback is best-effort on shutdown: on Linux, npm and pnpm run it through `sh`, which does not pass signals on, so the CLI also signals wrangler's descendants directly. Add the staging directory (`.dev-<outDir>`, so `.dev-dist/` by default) to `.gitignore`.
 
 | Option | Default |
 | ------ | ------- |
 | `--build <cmd>` (`MD_ROUTER_DEV_BUILD`) | the site's `build` script, via the package manager its lockfile indicates (pnpm, yarn, bun or npm; the lockfile is searched up the tree, so monorepos work), else the `packageManager` field in `package.json`, else npm. A custom command runs through the shell with `node_modules/.bin` on `PATH`, so `--build "astro build"` works. |
-| `--out-dir <dir>` | `assets.directory` from `wrangler.jsonc` / `wrangler.json` / `wrangler.toml` (JSONC comments and trailing commas are fine), else `dist`. The staging directory is `.dev-<name>` next to it. |
+| `--out-dir <dir>` | `assets.directory` from `wrangler.jsonc` / `wrangler.json` / `wrangler.toml` (JSONC comments and trailing commas are fine), else `dist`. The staging directory is `.dev-<name>` next to it. Both are emptied and refilled on every build, so the command refuses (and says why) any directory that could hold something else: the site root or anything above it; `src/`, `public/`, `node_modules/`, `.git/` or the Worker's directory (from wrangler `main`), whether equal, inside or enclosing; the wrangler config's directory; one with a `package.json`; and one holding git-tracked files. Paths are compared as the filesystem resolves them, so `SRC` on a case-insensitive disk is `src`. A Worker that the wrangler config itself places inside `assets.directory` (Astro's `dist/_worker.js`) is treated as build output. |
 | `--out-dir-flag <flag>` | `--outDir`: appended to the build as `<flag> <staging>` so it writes to staging, not the served directory. Pass `""` to disable. Put `{outDir}` anywhere in `--build` to place the path yourself (and skip the flag). The staging path (relative to the site root) is also exported as `MD_ROUTER_DEV_OUT_DIR`; a relative `--out-dir` resolves against the wrangler config's directory. |
-| `--watch <path>` | Added to the defaults: `src/`, `public/`, `astro.config.*`, `vite.config.*`, `tsconfig.json`, `package.json`, `.env*`. Directories recurse; other entries are root-level file names (a trailing `*` matches a prefix). Repeatable or comma-separated. `--no-default-watch` drops the defaults. The Worker directory is deliberately not watched — wrangler reloads the Worker itself. |
+| `--watch <path>` | Added to the defaults: `src/`, `public/`, `astro.config.*`, `vite.config.*`, `tsconfig.json`, `package.json`, `.env*`. Directories recurse; other entries are root-level file names (a trailing `*` matches a prefix). Repeatable or comma-separated. `--no-default-watch` drops the defaults. The Worker directory is deliberately not watched — wrangler reloads the Worker itself. Changes under the output and staging directories, `node_modules/`, `.git/` and `.wrangler/` never trigger a build, so `--watch .` is safe. |
 | `--port <n>` (`PORT`) | `4321`. If it is taken, the next free port (up to 19 higher, both IPv4 and IPv6 loopback checked) is used and printed — wrangler itself would just die on a busy explicit port. |
-| `--config <file>` | `wrangler.jsonc`, `wrangler.json`, then `wrangler.toml` in the root. |
+| `--config <file>` | `wrangler.jsonc`, `wrangler.json`, then `wrangler.toml` in the root. A `--config` that doesn't exist is an error. |
 | `--root <dir>` | the current directory. |
 | `--strict` (`MD_ROUTER_DEV_STRICT=1`) | off. See below. |
 | `-- <args>` | everything after `--` is passed to `wrangler dev`. |
 | `--help`, `-h` | prints the options and exits. |
 
-Flags win over env. A failed build, and a build that exits 0 but writes nothing, are both handled: the previous good build stays up. On a cold start with no output directory yet, the first build must succeed or the command exits 1.
+Flags win over env. A failed build, and a build that exits 0 but writes nothing, are both handled: the previous good build stays up. A build that ignores the staging directory and writes straight into the output directory (say `astro build && node postbuild.mjs` without `{outDir}`) is called out as such: what is served is whatever it left there, with no last-good-build protection, until you point it at `{outDir}` or set `--out-dir-flag`. On a cold start with no output directory yet, the first build must succeed or the command exits 1. When wrangler exits, so does the command, with wrangler's exit code (1 if wrangler was killed by a signal); a Ctrl-C you send exits 0.
 
 ### Relaxing checks in watch builds
 

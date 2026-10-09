@@ -2,9 +2,11 @@
  * the CLI runs under any Node >=20 without a build step. Nothing here is imported by the Worker
  * (`src/` never references `bin/`), so none of it can reach a Worker bundle. */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer } from "node:net";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const DEFAULT_PORT = 4321;
 export const MAX_PORT = 65535;
@@ -110,6 +112,9 @@ export function parseWranglerToml(text) {
 
 /** Find and read the wrangler config. Returns `{ file, assetsDirectory, main }` (each may be undefined). */
 export function readWranglerConfig(root, explicit) {
+  if (explicit && !existsSync(resolve(root, explicit))) {
+    throw new Error(`config file ${resolve(root, explicit)} not found`);
+  }
   const candidates = explicit
     ? [resolve(root, explicit)]
     : ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].map((f) => join(root, f));
@@ -180,6 +185,93 @@ export function execLocalCommand(pm, bin, args = []) {
   }
 }
 
+/** The JS entry of the site's locally-installed wrangler (its package.json `bin.wrangler`), or
+ * null if it can't be resolved — not installed, or a Yarn PnP install. Resolution only looks at
+ * what is on disk, so this never downloads anything. Running this file with `process.execPath`
+ * puts no package manager or shell between us and wrangler, so our signals reach it. */
+export function resolveWranglerBin(root) {
+  const req = createRequire(join(root, "package.json"));
+  let pkgFile;
+  try {
+    pkgFile = req.resolve("wrangler/package.json");
+  } catch {
+    // A package whose `exports` hides package.json still has one on disk: look in the same dirs.
+    pkgFile = (req.resolve.paths("wrangler") ?? [])
+      .map((dir) => join(dir, "wrangler", "package.json"))
+      .find((f) => existsSync(f));
+  }
+  if (!pkgFile) return null;
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(pkgFile, "utf8"));
+  } catch {
+    return null;
+  }
+  const rel = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.wrangler;
+  if (typeof rel !== "string") return null;
+  const file = resolve(dirname(pkgFile), rel);
+  return existsSync(file) ? file : null;
+}
+
+/* ------------------------------------------------------------- processes */
+
+/** `[pid, ppid]` for every process we can see: /proc on Linux (always there, even in slim
+ * containers without `ps`), `ps` elsewhere on POSIX. Empty on Windows or on any failure. */
+export function processTable() {
+  try {
+    if (process.platform === "linux") {
+      const rows = [];
+      for (const name of readdirSync("/proc")) {
+        if (!/^\d+$/.test(name)) continue;
+        try {
+          const stat = readFileSync(`/proc/${name}/stat`, "utf8");
+          // Fields after the `(comm)`, which may itself contain spaces and parens: state ppid …
+          const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+          rows.push([Number(name), ppid]);
+        } catch {} // exited while we were reading
+      }
+      return rows;
+    }
+    if (process.platform === "win32") return [];
+    const out = execFileSync("ps", ["-A", "-o", "pid=", "-o", "ppid="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/).map(Number))
+      .filter((r) => r.length === 2 && r.every(Number.isInteger));
+  } catch {
+    return [];
+  }
+}
+
+/** Every descendant of `pid` in a `[pid, ppid]` table (children first, then theirs). */
+export function descendantsOf(table, pid) {
+  const found = [];
+  const queue = [pid];
+  while (queue.length > 0) {
+    const parent = queue.shift();
+    for (const [p, pp] of table) {
+      if (pp === parent && p !== pid && !found.includes(p)) {
+        found.push(p);
+        queue.push(p);
+      }
+    }
+  }
+  return found;
+}
+
+/** Is `pid` (or, negative, process group `-pid`) still around? EPERM means it exists. */
+export function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
 /* ----------------------------------------------------------------- port */
 
 /** A real TCP port, or null. "" / "0" / non-numeric / out of range are all rejected, because they
@@ -213,6 +305,115 @@ export async function findFreePort(start, tries = PORT_TRIES, isFree = portFree)
   return null;
 }
 
+/* -------------------------------------------------------- output guard */
+
+/** The path as the filesystem spells it: symlinks resolved and, on a case-insensitive volume, the
+ * on-disk case (`realpathSync.native` does that; the JS `realpathSync` keeps the input's case). A
+ * path that doesn't exist yet is canonicalised through its nearest existing ancestor. */
+export function canonicalPath(p) {
+  const abs = resolve(p);
+  const rest = [];
+  for (let dir = abs; ; dir = dirname(dir)) {
+    try {
+      return join(realpathSync.native(dir), ...rest);
+    } catch {}
+    if (dirname(dir) === dir) return abs;
+    rest.unshift(basename(dir));
+  }
+}
+
+/** Is `child` the same path as `parent`, or inside it? Both must already be canonical. */
+export function isWithin(child, parent) {
+  const rel = relative(parent, child);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** Git-tracked files under `dir`, relative to `root` (empty if not in a git work tree or no git). */
+export function gitTrackedFiles(root, dir) {
+  if (!existsSync(dir)) return [];
+  try {
+    const out = execFileSync("git", ["-C", root, "ls-files", "-z", "--", relative(root, dir)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return out.split("\0").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** Refuse an output directory whose pruning would delete something that isn't build output. The
+ * loop makes `outDir` match each build exactly (and empties `staging` before each), so anything
+ * else in them is deleted. Throws a user-facing Error that says why and what to pass instead.
+ *
+ * Compared on canonical paths, so `SRC` on a case-insensitive volume, or a symlink, can't slip
+ * past. `workerDir` (the wrangler `main`'s directory) is protected unless it sits inside the
+ * wrangler-configured assets directory, where the config itself declares the Worker to be build
+ * output (Astro's adapter writes `dist/_worker.js`). */
+export function checkOutDir({ root, outDir, staging, configDir, workerDir, assetsDir }) {
+  const fix =
+    "Point --out-dir (or assets.directory in the wrangler config) at a directory only the build " +
+    "writes, such as dist/.";
+  const pruned = "it is emptied and refilled to match every build";
+  const rootC = canonicalPath(root);
+  const out = canonicalPath(outDir);
+  const show = (p) => (relative(rootC, p) || ".") + (p === rootC ? " (the site root)" : "/");
+  const refuse = (msg) => {
+    throw new Error(`refusing output dir ${outDir}: ${msg}. ${fix}`);
+  };
+
+  if (out === rootC || !isWithin(out, rootC)) {
+    refuse(`it must be a subdirectory of the site root ${root}, because ${pruned}`);
+  }
+  // Directories that hold source the build output must stay out of AND away from (no nesting
+  // either way), and containers it may live inside but must not be, or enclose.
+  const leaves = ["src", "public", "node_modules", ".git"].map((d) => canonicalPath(join(root, d)));
+  const configC = canonicalPath(configDir);
+  const containers = [configC];
+  if (workerDir) {
+    const w = canonicalPath(workerDir);
+    // A Worker entry next to the config (or at the root) makes that dir a container, not source.
+    if (isWithin(rootC, w) || isWithin(configC, w)) containers.push(w);
+    else if (assetsDir && isWithin(w, canonicalPath(assetsDir))) {
+      // The Worker is build output by the config's own say-so: only forbid out === w, or inside it.
+      if (isWithin(out, w)) leaves.push(w);
+    } else leaves.push(w);
+  }
+  for (const d of leaves) {
+    if (isWithin(out, d)) {
+      refuse(`it is ${out === d ? "" : "inside "}${show(d)}, which holds source, and ${pruned}`);
+    }
+    if (isWithin(d, out)) {
+      refuse(`it contains ${show(d)}, which holds source, and ${pruned}`);
+    }
+  }
+  for (const d of containers) {
+    if (isWithin(d, out)) {
+      refuse(
+        `it ${out === d ? "is" : "contains"} ${show(d)} (it holds the wrangler config or Worker), and ${pruned}`
+      );
+    }
+  }
+  for (const dir of [outDir, staging]) {
+    const d = canonicalPath(dir);
+    if (existsSync(join(d, "package.json"))) {
+      refuse(
+        `${show(d)} has a package.json, so it looks like a package, not build output, and ${pruned}`
+      );
+    }
+    const tracked = gitTrackedFiles(rootC, d);
+    if (tracked.length > 0) {
+      const sample = tracked.slice(0, 3).join(", ") + (tracked.length > 3 ? ", …" : "");
+      refuse(
+        `${show(d)} holds ${tracked.length} git-tracked file(s) (${sample}), and ${pruned}, so they ` +
+          `would be deleted. Build output is normally gitignored; if these really are build ` +
+          `output, untrack them (git rm -r --cached ${relative(rootC, d)})`
+      );
+    }
+  }
+}
+
 /* ------------------------------------------------------------ CLI args */
 
 export const HELP = `cloudflare-md-router dev — production-faithful dev loop for a Worker + static assets site
@@ -221,16 +422,19 @@ Usage: cloudflare-md-router dev [options] [-- <extra wrangler dev args>]
 
   --build <cmd>        build command (default: the site's "build" script via its package manager).
                        Run through the shell with node_modules/.bin on PATH, so "astro build" works.
-  --out-dir <dir>      served output dir (default: assets.directory from the wrangler config, else dist)
+  --out-dir <dir>      served output dir (default: assets.directory from the wrangler config, else dist).
+                       Emptied and refilled on every build, so source dirs, the site root, a dir with
+                       a package.json, and one holding git-tracked files are refused.
   --out-dir-flag <f>   flag used to point the build at the staging dir (default: ${DEFAULT_OUT_DIR_FLAG};
                        use "" to disable). Ignored if --build contains {outDir}.
   --watch <path>       extra path to rebuild on, repeatable or comma-separated, added to the defaults
                        (src, public, astro/vite config, tsconfig.json, package.json, .env*).
                        Directories recurse; anything else is a root-level file name (a trailing *
                        is a prefix match). The Worker dir is NOT watched: wrangler reloads it itself.
+                       The output and staging dirs, node_modules, .git and .wrangler never trigger.
   --no-default-watch   watch only what --watch names
   --port <n>           first port to try (default: $PORT, else ${DEFAULT_PORT}); walks up to ${PORT_TRIES - 1} higher
-  --config <file>      wrangler config (default: wrangler.jsonc, wrangler.json, wrangler.toml)
+  --config <file>      wrangler config (default: wrangler.jsonc, wrangler.json, wrangler.toml); must exist
   --root <dir>         site root (default: cwd)
   --strict             do not set MD_ROUTER_DEV=1 for the build (keep strict checks on)
   --help
@@ -295,20 +499,17 @@ export function resolveOptions(flags, env, cwd) {
   }
 
   const outDirRaw = flags.outDir ?? wrangler.assetsDirectory ?? DEFAULT_OUT_DIR;
-  const outDir = resolve(wrangler.file ? dirname(wrangler.file) : root, outDirRaw);
-  if (relative(root, outDir) === "" || relative(root, outDir).startsWith("..")) {
-    throw new Error(`output dir ${outDir} must be a subdirectory of the site root ${root}`);
-  }
-  const protectedDirs = ["src", "public", "node_modules", ".git"].map((d) => join(root, d));
-  if (
-    protectedDirs.some((d) => outDir === d || outDir.startsWith(`${d}/`)) ||
-    existsSync(join(outDir, "package.json"))
-  ) {
-    throw new Error(
-      `output dir ${outDir} looks like source, not build output; it is pruned on every build`
-    );
-  }
+  const configDir = wrangler.file ? dirname(wrangler.file) : root;
+  const outDir = resolve(configDir, outDirRaw);
   const staging = join(dirname(outDir), `.dev-${basename(outDir)}`);
+  checkOutDir({
+    root,
+    outDir,
+    staging,
+    configDir,
+    workerDir: wrangler.main ? dirname(resolve(configDir, wrangler.main)) : undefined,
+    assetsDir: wrangler.assetsDirectory ? resolve(configDir, wrangler.assetsDirectory) : undefined,
+  });
 
   const watch = [
     ...(flags.noDefaultWatch ? [] : [...DEFAULT_WATCH, ...DEFAULT_ROOT_TRIGGERS]),

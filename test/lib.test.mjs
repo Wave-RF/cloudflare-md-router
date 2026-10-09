@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import {
   buildInvocation,
+  canonicalPath,
   classifyWatch,
+  descendantsOf,
   detectPackageManager,
   execLocalCommand,
   findFreePort,
@@ -14,14 +17,17 @@ import {
   parseJsonc,
   parsePort,
   parseWranglerToml,
+  processTable,
   readWranglerConfig,
   resolveOptions,
+  resolveWranglerBin,
   runScriptCommand,
   stripJsonc,
 } from "../bin/lib.mjs";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "mdr-lib-"));
 const write = (dir, name, text) => {
+  mkdirSync(dirname(join(dir, name)), { recursive: true });
   writeFileSync(join(dir, name), text);
   return join(dir, name);
 };
@@ -78,6 +84,59 @@ test("readWranglerConfig prefers jsonc, then json, then toml; honours an explici
   assert.equal(c.main, "w.ts");
   write(dir, "other.toml", '[assets]\ndirectory = "o"');
   assert.equal(readWranglerConfig(dir, "other.toml").assetsDirectory, "o");
+});
+
+test("an explicit --config that does not exist is an error, not silently ignored", () => {
+  const dir = tmp();
+  write(dir, "wrangler.jsonc", '{"assets":{"directory":"d"}}');
+  assert.throws(
+    () => readWranglerConfig(dir, "wrangler.staging.jsonc"),
+    new RegExp(`config file ${join(dir, "wrangler.staging.jsonc")} not found`)
+  );
+  assert.throws(
+    () => resolveOptions(parseArgs(["--config", "nope.toml"]), {}, dir),
+    /config file .*nope\.toml not found/
+  );
+});
+
+test("resolveWranglerBin finds the local package's bin (string or map), never anything else", () => {
+  const dir = tmp();
+  write(dir, "package.json", "{}");
+  assert.equal(resolveWranglerBin(dir), null, "not installed");
+  write(dir, "node_modules/wrangler/package.json", '{"bin":{"wrangler":"./bin/wrangler.js"}}');
+  assert.equal(resolveWranglerBin(dir), null, "bin file missing");
+  write(dir, "node_modules/wrangler/bin/wrangler.js", "");
+  assert.equal(
+    resolveWranglerBin(dir),
+    join(canonicalPath(dir), "node_modules/wrangler/bin/wrangler.js")
+  );
+  // A string `bin`, and an `exports` map that hides package.json.
+  write(dir, "node_modules/wrangler/package.json", '{"bin":"cli.js","exports":{".":"./index.js"}}');
+  write(dir, "node_modules/wrangler/cli.js", "");
+  assert.equal(resolveWranglerBin(dir), join(canonicalPath(dir), "node_modules/wrangler/cli.js"));
+  // From a nested site in a workspace: resolution walks up like Node's.
+  const nested = join(dir, "apps", "site");
+  mkdirSync(nested, { recursive: true });
+  assert.equal(
+    resolveWranglerBin(nested),
+    join(canonicalPath(dir), "node_modules/wrangler/cli.js")
+  );
+});
+
+test("descendantsOf walks the whole tree; processTable sees this process", () => {
+  const table = [
+    [10, 1],
+    [11, 10],
+    [12, 11],
+    [13, 10],
+    [20, 1],
+  ];
+  assert.deepEqual(descendantsOf(table, 10), [11, 13, 12]);
+  assert.deepEqual(descendantsOf(table, 20), []);
+  if (process.platform !== "win32") {
+    const me = processTable().find(([pid]) => pid === process.pid);
+    assert.deepEqual(me, [process.pid, process.ppid]);
+  }
 });
 
 test("detectPackageManager: lockfiles, walking up, packageManager field, npm fallback", () => {
@@ -206,8 +265,6 @@ test("resolveOptions: flags beat env, env beats defaults, bad values throw", () 
   assert.equal(f.outDir, join(root, "public-out"));
   assert.equal(resolveOptions(parseArgs([]), { MD_ROUTER_DEV_STRICT: "0" }, root).strict, false);
   assert.throws(() => resolveOptions(parseArgs([]), { PORT: "nope" }, root), /port must be/);
-  assert.throws(() => resolveOptions(parseArgs(["--out-dir", ".."]), {}, root), /subdirectory/);
-  assert.throws(() => resolveOptions(parseArgs(["--out-dir", "."]), {}, root), /subdirectory/);
 });
 
 test("resolveOptions: watch defaults are additive, --no-default-watch replaces them", () => {
@@ -269,14 +326,95 @@ test("shellQuote leaves safe words bare and quotes the rest", async () => {
   assert.equal(shellQuote("it's"), "'it'\\''s'");
 });
 
-test("resolveOptions refuses an output dir that looks like source", () => {
+/* ------------------------------------------------- output-dir guard */
+
+const refuses = (root, args, why) =>
+  assert.throws(
+    () => resolveOptions(parseArgs(args), {}, root),
+    (err) => {
+      assert.match(err.message, /^refusing output dir /);
+      assert.match(err.message, why);
+      assert.match(err.message, /Point --out-dir/, "says how to fix it");
+      return true;
+    }
+  );
+
+test("output dir: source dirs, inside them, or containing them are refused", () => {
+  const root = site({ "package.json": "{}", "src/a.ts": "", "public/x.png": "" });
+  refuses(root, ["--out-dir", "src"], /is src\/, which holds source/);
+  refuses(root, ["--out-dir", "src/out"], /inside src\//);
+  refuses(root, ["--out-dir", "node_modules"], /is node_modules\//);
+  refuses(root, ["--out-dir", ".git"], /is \.git\//);
+  refuses(root, ["--out-dir", "public"], /is public\//);
+  assert.equal(
+    resolveOptions(parseArgs(["--out-dir", "dist"]), {}, root).outDir,
+    join(root, "dist")
+  );
+});
+
+test("output dir: SRC is src on a case-insensitive filesystem", (t) => {
+  const root = site({ "src/a.ts": "" });
+  if (!existsSync(join(root, "SRC"))) {
+    t.skip("this filesystem is case-sensitive, so SRC is a different directory from src");
+    return;
+  }
+  refuses(root, ["--out-dir", "SRC"], /is src\/, which holds source/);
+  refuses(root, ["--out-dir", "Src/Out"], /inside src\//);
+});
+
+test("output dir: the Worker's directory, from wrangler main, is refused", () => {
+  const root = site({
+    "wrangler.jsonc": '{"main":"worker/index.ts","assets":{"directory":"dist"}}',
+    "worker/index.ts": "",
+  });
+  refuses(root, ["--out-dir", "worker"], /is worker\/, which holds source/);
+  // ...but a Worker the config itself places in build output (Astro's adapter) is not source.
+  const astro = site({
+    "wrangler.jsonc": '{"main":"./dist/_worker.js/index.js","assets":{"directory":"./dist"}}',
+  });
+  assert.equal(resolveOptions(parseArgs([]), {}, astro).outDir, join(astro, "dist"));
+  refuses(astro, ["--out-dir", "dist/_worker.js"], /is dist\/_worker\.js\//);
+});
+
+test("output dir: the site root, its ancestors, / and the wrangler config's dir are refused", () => {
   const root = site({ "package.json": "{}" });
-  assert.throws(
-    () => resolveOptions(parseArgs(["--out-dir", "src"]), {}, root),
-    /looks like source/
+  refuses(root, ["--out-dir", "."], /must be a subdirectory of the site root/);
+  refuses(root, ["--out-dir", ".."], /must be a subdirectory of the site root/);
+  refuses(root, ["--out-dir", "/"], /must be a subdirectory of the site root/);
+  // Config in a subdirectory: a relative --out-dir resolves against it, so "." is that dir.
+  write(root, "site/wrangler.jsonc", '{"main":"index.ts"}');
+  refuses(
+    root,
+    ["--config", "site/wrangler.jsonc", "--out-dir", "."],
+    /is site\/ \(it holds the wrangler config/
   );
-  assert.throws(
-    () => resolveOptions(parseArgs(["--out-dir", "node_modules"]), {}, root),
-    /looks like source/
+  const ok = resolveOptions(
+    parseArgs(["--config", "site/wrangler.jsonc", "--out-dir", "dist"]),
+    {},
+    root
   );
+  assert.equal(ok.outDir, join(root, "site", "dist"));
+});
+
+test("output dir: one with a package.json, or git-tracked files, is refused", (t) => {
+  const root = site({ "package.json": "{}", "pkg/package.json": "{}" });
+  refuses(root, ["--out-dir", "pkg"], /has a package\.json/);
+  if (spawnSync("git", ["--version"]).status !== 0) {
+    t.skip("git is not installed");
+    return;
+  }
+  write(root, "content/post.md", "# hi");
+  write(root, "content/other.md", "# hi");
+  write(root, "dist/index.html", "built");
+  assert.equal(spawnSync("git", ["init", "-q", root]).status, 0);
+  assert.equal(spawnSync("git", ["-C", root, "add", "content"]).status, 0);
+  refuses(
+    root,
+    ["--out-dir", "content"],
+    /holds 2 git-tracked file\(s\) \(content\/other\.md, content\/post\.md\)/
+  );
+  // Untracked build output is fine, and so is a dir that doesn't exist yet.
+  assert.equal(resolveOptions(parseArgs([]), {}, root).outDir, join(root, "dist"));
+  assert.equal(resolveOptions(parseArgs(["--out-dir", "new"]), {}, root).outDir, join(root, "new"));
+  rmSync(root, { recursive: true, force: true });
 });
