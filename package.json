@@ -1,6 +1,6 @@
 {
   "name": "@wave-rf/cloudflare-md-router",
-  "version": "0.2.1",
+  "version": "0.0.0-development",
   "description": "Cloudflare Worker that serves a `.md` twin of any static page when the request is from a known LLM crawler or explicitly asks for `text/markdown`. Falls back to the HTML response otherwise.",
   "keywords": [
     "cloudflare",
@@ -57,7 +57,8 @@
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check .",
-    "verify": "biome check . && pnpm run typecheck && pnpm run test && bash scripts/ci-marker.sh write",
+    "check:release": "node scripts/check-release-config.mjs",
+    "verify": "biome check . && pnpm run typecheck && pnpm run test && pnpm run check:release && bash scripts/ci-marker.sh write",
     "setup": "git config core.hooksPath .githooks",
     "test": "node --test"
   },
@@ -67,6 +68,10 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.15",
     "@cloudflare/workers-types": "^5.20260706.1",
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/release-notes-generator": "14.1.1",
+    "conventional-changelog-conventionalcommits": "9.3.1",
+    "semantic-release": "25.0.9",
     "typescript": "^6.0.3"
   }
 }

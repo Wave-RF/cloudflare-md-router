@@ -1,6 +1,6 @@
 <!--
 PR title MUST be Conventional Commits (the required `pr-title` check, and the
-squash-merge subject release-please parses for the version bump):
+squash-merge subject semantic-release parses for the version bump):
   <type>(optional-scope)(optional-!): <lowercase subject, no trailing period>   (<= 72 chars)
   types: feat fix docs refactor test chore ci deps build perf revert style
   breaking change: add `!` (e.g. `feat!: …`) or a `BREAKING CHANGE:` body footer.

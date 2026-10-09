@@ -26,9 +26,9 @@ Biome owns JS/TS/JSON style. There is **no test runner** today — CI is Biome +
 
 - **Title must be [Conventional Commits](https://www.conventionalcommits.org/):** `<type>(scope): subject`, ≤ 72 chars, lowercase subject, no trailing period. Types: `feat fix docs refactor test chore ci deps build perf revert style`. A breaking change uses `feat!:` (or a `BREAKING CHANGE:` body footer). The title becomes the squash-merge commit and **drives the version bump** — check it with `scripts/lint-pr-title.sh "<title>"`.
 - Run `pnpm run verify` before pushing; the pre-push hook requires it.
-- Update the `src/` JSDoc + `README.md` when you change the public surface — `MdRouterOptions` options, the exports, a default, the `LLM_BOT_UA` bot list, or the `wrangler.jsonc` contract (see [AGENTS.md §Documentation Sync](AGENTS.md#documentation-sync)). **Don't** hand-edit `CHANGELOG.md` — it's generated from commit messages.
+- Update the `src/` JSDoc + `README.md` when you change the public surface — `MdRouterOptions` options, the exports, a default, the `LLM_BOT_UA` bot list, or the `wrangler.jsonc` contract (see [AGENTS.md §Documentation Sync](AGENTS.md#documentation-sync)). **Don't** hand-edit `CHANGELOG.md` — it is frozen history; release notes are generated from commit messages into GitHub Releases.
 - PRs merge via **squash**; required checks (`ci`, `pr-title`) must pass.
 
 ## Releases
 
-Automated — you don't bump versions or tag by hand. Merges to `main` accumulate into a release PR (maintained by release-please); merging that PR publishes to npm. During 0.x, breaking changes bump the minor and features/fixes bump the patch, so `^0.x` consumers auto-update safely. Maintainers: see [RELEASING.md](RELEASING.md).
+Automated on merge — you don't bump versions or tag by hand. Your PR title decides whether merging it releases: `fix`/`perf`/`revert` → patch, `feat` → minor, `!`/`BREAKING CHANGE` → major, and `deps`/`ci`/`chore`/`docs`/`test`/`refactor`/`build`/`style` → no release. Maintainers: see [RELEASING.md](RELEASING.md).
