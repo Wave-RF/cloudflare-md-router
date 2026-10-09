@@ -4,7 +4,7 @@
 # to the required `pr-title` check (.github/workflows/pr-title.yml) so a bad title
 # is caught BEFORE `gh pr create` instead of after the required check fails — the
 # recurring "title too long / wrong format" round-trip. Squash-merge uses the PR
-# title as the commit subject, which release-please parses for the version bump,
+# title as the commit subject, which semantic-release parses for the version bump,
 # so the format isn't cosmetic: it drives releases.
 #
 # Usage:  scripts/lint-pr-title.sh "<title>"     (or pipe the title on stdin)
