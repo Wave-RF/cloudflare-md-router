@@ -17,7 +17,7 @@ The package is pure ESM and ships **raw TypeScript** with no build step — `src
 pnpm run typecheck   # tsc --noEmit (strict)
 pnpm run check       # Biome lint + format check (what CI runs)
 pnpm run format      # auto-fix formatting
-pnpm run verify      # check + typecheck together (the local gate; what the hooks run)
+pnpm run verify      # check + typecheck + tests + the release-config check together (the local gate; what the hooks run)
 ```
 
 Biome owns JS/TS/JSON style. Tests are `node --test` over `test/`, covering the `bin/` dev CLI; CI runs Biome + `tsc --noEmit` + `node --test` + the offline release-config check. The Worker's routing has no tests yet — if you add non-trivial routing logic, a test (a stub `ASSETS` Fetcher driving `createMdRouter()`) is encouraged. See [AGENTS.md §Key Invariants](AGENTS.md#key-invariants) for what must stay true (the verbatim pass-through, the markdown-routing trigger, the HTML-fallback-on-404, the opt-in `Link` header, the `wrangler.jsonc` contract).

@@ -504,3 +504,29 @@ test("output dir: git-tracked files are found whatever the case of the path", (t
   assert.deepEqual(gitTrackedFiles(root, join(root, "SRC")), ["src/a.ts"]);
   rmSync(root, { recursive: true, force: true });
 });
+
+test("output dir: a volume reporting inode 0 falls back to paths instead of refusing everything", () => {
+  const fsx = {
+    stat: (p) => {
+      if (!["/", "/site", "/site/src"].includes(p))
+        throw Object.assign(new Error(), { code: "ENOENT" });
+      return { dev: 3n, ino: 0n };
+    },
+    realpath: (p) => {
+      if (["/", "/site", "/site/src"].includes(p)) return p;
+      throw Object.assign(new Error(), { code: "ENOENT" });
+    },
+    readdir: () => [],
+    exists: () => false,
+    tracked: () => [],
+  };
+  const check = (outDir) =>
+    checkOutDir(
+      { root: "/site", outDir, staging: `/site/.dev-${basename(outDir)}`, configDir: "/site" },
+      fsx
+    );
+  assert.equal(sameDir("/site/dist", "/site", fsx), false, "every dir has ino 0, but they differ");
+  check("/site/dist"); // not refused
+  assert.throws(() => check("/site/src"), /it is src\//);
+  assert.throws(() => check("/site"), /must be a subdirectory/);
+});

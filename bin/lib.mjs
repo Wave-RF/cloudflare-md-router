@@ -310,7 +310,7 @@ export async function findFreePort(start, tries = PORT_TRIES, isFree = portFree)
 /** The filesystem calls the guard makes, injectable so a test can model a filesystem this machine
  * doesn't have (a case-insensitive mount on Linux, where `realpath` keeps the caller's case). */
 export const REAL_FS = {
-  stat: (p) => statSync(p),
+  stat: (p) => statSync(p, { bigint: true }), // bigint: a 64-bit inode survives exactly
   realpath: (p) => realpathSync.native(p),
   readdir: (p) => readdirSync(p),
   exists: (p) => existsSync(p),
@@ -356,10 +356,12 @@ export function isWithin(child, parent) {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-/** `dev:ino` of a directory, or null if it doesn't exist. */
+/** `dev:ino` of a directory, or null if it doesn't exist or has no usable identity (an inode of 0,
+ * as some network, virtual and Windows volumes report) — callers then compare canonical paths. */
 function dirId(p, fsx) {
   try {
     const st = fsx.stat(p);
+    if (st.ino === 0n || st.ino === 0) return null;
     return `${st.dev}:${st.ino}`;
   } catch {
     return null;
@@ -505,7 +507,9 @@ Usage: cloudflare-md-router dev [options] [-- <extra wrangler dev args>]
                        is a prefix match); nested file paths and missing dirs are skipped, with a
                        warning. The Worker dir is NOT watched: wrangler reloads it itself. Never
                        triggering: the output and staging dirs, node_modules, .git, .wrangler,
-                       framework caches (.astro, .svelte-kit, .next, …) and anything gitignored.
+                       framework caches (.astro, .svelte-kit, .next, …), and paths below a watched
+                       dir that git ignores — unless that watched dir is itself gitignored. Root-
+                       level names (.env*, config files, names you pass) are never git-filtered.
   --no-default-watch   watch only what --watch names
   --port <n>           first port to try (default: $PORT, else ${DEFAULT_PORT}); walks up to ${PORT_TRIES - 1} higher
   --config <file>      wrangler config (default: wrangler.jsonc, wrangler.json, wrangler.toml); must exist

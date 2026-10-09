@@ -83,24 +83,29 @@ async function prune(stagingDir, distDir) {
 const hasOutput = (dir) => existsSync(dir) && readdirSync(dir).length > 0;
 
 /** Paths (relative to `root`) minus the ones git ignores — a framework cache such as `.astro/` is
- * written by every build, so under `--watch .` it would trigger the next one. Outside a git work
- * tree, or if git fails, nothing is dropped. */
+ * written by every build, so under `--watch .` it would trigger the next one. Each path is also
+ * asked about as `path/`, because a dir-only pattern (`tmpbuild/`) doesn't match a path that no
+ * longer exists (a temp dir the build created and removed). Outside a git work tree, or if git
+ * fails or takes over 2 s, nothing is dropped. */
 export function gitIgnoredFilter(root) {
   const probe = spawnSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    timeout: 2000,
   });
   if (probe.status !== 0 || probe.stdout.trim() !== "true") return (files) => files;
   return (files) => {
     if (files.length === 0) return files;
+    const queries = files.flatMap((f) => [f, `${f}/`]);
     const r = spawnSync("git", ["-C", root, "check-ignore", "--stdin", "-z"], {
-      input: `${files.join("\0")}\0`,
+      input: `${queries.join("\0")}\0`,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "ignore"],
+      timeout: 2000,
     });
-    if (r.status !== 0 && r.status !== 1) return files; // 1 = none ignored; anything else = error
+    if (r.status !== 0 && r.status !== 1) return files; // 1 = none ignored; else error or timeout
     const ignored = new Set(r.stdout.split("\0").filter(Boolean));
-    return files.filter((f) => !ignored.has(f));
+    return files.filter((f) => !ignored.has(f) && !ignored.has(`${f}/`));
   };
 }
 
@@ -353,18 +358,22 @@ export async function dev(opts) {
     building = false;
   }
 
-  // Changes are batched per debounce window, and the batch loses anything git ignores (a framework
-  // cache the build itself writes) before it may trigger a build.
-  const pending = new Set();
+  // Changes are batched per debounce window. A path strictly below a watched directory that git
+  // ignores (a framework cache the build itself writes) is dropped before it may trigger a build.
+  // Never filtered: root-level name matches (`.env` is gitignored almost everywhere, yet a default
+  // trigger) and anything under a watched directory that is itself gitignored (`--watch content`
+  // where content/ is ignored) — the user asked for those explicitly.
+  const pending = new Map(); // path → may be git-filtered
   const notIgnored = gitIgnoredFilter(opts.root);
-  function onChange(file) {
-    pending.add(file);
+  function onChange(file, filterable) {
+    pending.set(file, (pending.get(file) ?? true) && filterable);
     clearTimeout(timer);
     timer = setTimeout(flush, DEBOUNCE_MS);
   }
   function flush() {
     if (shuttingDown) return;
-    const files = notIgnored([...pending]);
+    const always = [...pending].filter(([, f]) => !f).map(([p]) => p);
+    const files = [...always, ...notIgnored([...pending].filter(([, f]) => f).map(([p]) => p))];
     pending.clear();
     if (files.length === 0) return;
     pendingReason = files.length > 1 ? `${files[0]} +${files.length - 1} more` : files[0];
@@ -385,15 +394,19 @@ export async function dev(opts) {
     // — would otherwise rebuild forever. Both are canonical (resolveOptions), as are `dirs`, so the
     // prefix check matches the spelling the filesystem reports.
     const ignoredRoots = [opts.outDir, opts.staging];
-    const underIgnored = (abs) => ignoredRoots.some((r) => abs === r || abs.startsWith(r + sep));
+    const under = (abs, roots) => roots.some((r) => abs === r || abs.startsWith(r + sep));
+    // Watched dirs (nested ones included) that git itself ignores: their events are never filtered.
+    const exempt = canon.filter(
+      (d) => d !== opts.root && notIgnored([relative(opts.root, d)]).length === 0
+    );
     for (const dir of dirs) {
-      if (underIgnored(dir)) continue;
+      if (under(dir, ignoredRoots)) continue;
       watchers.push(
         watch(dir, { recursive: true }, (_event, file) => {
           if (!file || IGNORED.test(file) || NOISE_DIRS.test(file)) return;
           const abs = join(dir, file);
-          if (underIgnored(abs)) return;
-          onChange(relative(opts.root, abs));
+          if (under(abs, ignoredRoots)) return;
+          onChange(relative(opts.root, abs), !under(abs, exempt));
         })
       );
     }
@@ -402,7 +415,7 @@ export async function dev(opts) {
     if (names.length > 0) {
       watchers.push(
         watch(opts.root, (_event, file) => {
-          if (file && !IGNORED.test(file) && matchesName(names, file)) onChange(file);
+          if (file && !IGNORED.test(file) && matchesName(names, file)) onChange(file, false);
         })
       );
     }
@@ -530,7 +543,14 @@ export async function dev(opts) {
   };
 
   try {
-    const early = await run();
+    let early;
+    try {
+      early = await run();
+    } catch (err) {
+      // e.g. fs.watch throwing ENOSPC (inotify limit) after wrangler started: never leave it running.
+      fail(`fatal: ${err?.message ?? err} — stopping`);
+      early = 1;
+    }
     if (early !== undefined) shutdown(early);
     return await exited;
   } finally {

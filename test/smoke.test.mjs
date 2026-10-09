@@ -52,7 +52,7 @@ function makeSite(pm = "npm") {
   // on demand.
   w(
     "build.mjs",
-    `import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+    `import { readFileSync, writeFileSync, mkdirSync, appendFileSync, rmSync } from "node:fs";
 const logs = process.env.FIXTURE_LOGS;
 appendFileSync(logs + "/build.pids", process.pid + "\\n");
 const out = process.argv[process.argv.indexOf("--outDir") + 1];
@@ -66,6 +66,7 @@ else {
   if (process.env.FIXTURE_CACHE) {
     mkdirSync(process.env.FIXTURE_CACHE, { recursive: true });
     writeFileSync(process.env.FIXTURE_CACHE + "/types.d.ts", String(Date.now()));
+    if (process.env.FIXTURE_CACHE_RM) rmSync(process.env.FIXTURE_CACHE, { recursive: true });
   }
   mkdirSync(out + "/sub", { recursive: true });
   writeFileSync(out + "/index.html", src);
@@ -265,9 +266,11 @@ test("wrangler dying of a signal takes dev down with a non-zero exit", TIMEOUT, 
   assertAllGone(site);
 });
 
-for (const [label, cache, git] of [
+for (const [label, cache, git, removed] of [
   ["a gitignored cache dir", "generated", true],
   ["a framework cache dir outside git (.astro)", ".astro", false],
+  // `git check-ignore tmpbuild` misses the dir-only pattern `tmpbuild/` once the dir is gone.
+  ["a gitignored temp dir it creates and then deletes", "tmpbuild", true, true],
 ]) {
   test(
     `--watch . builds once per edit, though the build also writes ${label}`,
@@ -284,10 +287,10 @@ for (const [label, cache, git] of [
         t,
         site,
         ["--build", "node build.mjs", "--watch", ".,config/site.json,nope"],
-        { FIXTURE_CACHE: cache }
+        { FIXTURE_CACHE: cache, ...(removed ? { FIXTURE_CACHE_RM: "1" } : {}) }
       );
       await until(() => has(site, "wrangler.pid"), "wrangler to start");
-      assert.ok(existsSync(join(site.root, cache, "types.d.ts")), "the build wrote its cache");
+      assert.equal(existsSync(join(site.root, cache)), !removed, "the build wrote its cache");
       assert.match(dev.log(), /not watching --watch config\/site\.json: .*watch its directory/);
       assert.match(dev.log(), /not watching --watch nope: no such directory/);
       assert.match(dev.log(), /watching \.\/, astro/);
@@ -384,6 +387,62 @@ test(
     assert.equal(await dev.exited, 1);
     assert.equal(has(site, "wrangler.args"), false);
     assert.equal(existsSync(join(site.out, "index.html")), false);
+    assertAllGone(site);
+  }
+);
+
+test(
+  "gitignored inputs the user asked for still trigger: a .env, and a gitignored --watch dir",
+  TIMEOUT,
+  async (t) => {
+    const site = makeSite();
+    writeFileSync(join(site.root, ".gitignore"), ".env\ncontent/\n");
+    writeFileSync(join(site.root, ".env"), "A=1");
+    mkdirSync(join(site.root, "content"));
+    writeFileSync(join(site.root, "content/post.md"), "# one");
+    assert.equal(spawnSync("git", ["init", "-q", site.root]).status, 0);
+    const dev = startDev(t, site, ["--build", "node build.mjs", "--watch", "content"]);
+    await until(() => has(site, "wrangler.pid"), "wrangler to start");
+    const builds = () => read(site, "build.pids").trim().split("\n").length;
+    await sleep(1000);
+    assert.equal(builds(), 1);
+    writeFileSync(join(site.root, ".env"), "A=2");
+    await until(() => builds() === 2, "a rebuild for the .env edit", 5000);
+    writeFileSync(join(site.root, "content/post.md"), "# two");
+    await until(() => builds() === 3, "a rebuild for the content edit", 5000);
+    await sleep(1000);
+    assert.equal(builds(), 3, `exactly one build per edit:\n${dev.log()}`);
+    dev.child.kill("SIGINT");
+    assert.equal(await dev.exited, 0);
+    assertAllGone(site);
+  }
+);
+
+test(
+  "fs.watch throwing after wrangler started (ENOSPC) stops wrangler and exits 1",
+  TIMEOUT,
+  async (t) => {
+    const site = makeSite();
+    // Preloaded into the CLI: every fs.watch throws, as when the inotify watch limit is reached.
+    writeFileSync(
+      join(site.logs, "enospc.mjs"),
+      `import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+fs.watch = () => {
+  // Hold until wrangler is really up (deterministic, not a race), then fail like inotify does.
+  const pidFile = process.env.FIXTURE_LOGS + "/wrangler.pid";
+  for (const t0 = Date.now(); !fs.existsSync(pidFile) && Date.now() - t0 < 10000; );
+  throw Object.assign(new Error("ENOSPC: System limit for number of file watchers reached"), { code: "ENOSPC" });
+};
+syncBuiltinESMExports();
+`
+    );
+    const dev = startDev(t, site, ["--build", "node build.mjs"], {
+      NODE_OPTIONS: `--import ${join(site.logs, "enospc.mjs")}`,
+    });
+    assert.equal(await dev.exited, 1);
+    assert.ok(has(site, "wrangler.pid"), "wrangler had started");
+    assert.match(dev.log(), /fatal: ENOSPC/);
     assertAllGone(site);
   }
 );
