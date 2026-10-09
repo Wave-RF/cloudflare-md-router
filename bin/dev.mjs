@@ -222,6 +222,7 @@ export async function dev(opts) {
   const onSignal = () => shutdown(0);
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  process.on("SIGHUP", onSignal); // closed terminal / dropped ssh
   // Backstop for anything the loop doesn't catch (incl. fs.watch 'error' events): tear wrangler
   // down with us rather than orphaning it on the port.
   const onFatal = (event) => (err) => {
@@ -233,6 +234,7 @@ export async function dev(opts) {
   const cleanup = () => {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    process.off("SIGHUP", onSignal);
     for (const [e, h] of fatalHandlers) process.off(e, h);
   };
 
@@ -263,6 +265,7 @@ export async function dev(opts) {
       );
       return 1;
     }
+    if (shuttingDown) return exitCode;
     if (port !== opts.port) {
       log(`port ${opts.port} is busy (often a dev server from another checkout) — using ${port}`);
     }
@@ -277,7 +280,11 @@ export async function dev(opts) {
       ...(opts.wranglerConfig ? ["--config", opts.wranglerConfig] : []),
       ...opts.wranglerArgs,
     ]);
-    wrangler = spawn(cmd, args, { cwd: opts.root, stdio: "inherit" });
+    wrangler = spawn(cmd, args, {
+      cwd: opts.root,
+      stdio: "inherit",
+      shell: process.platform === "win32",
+    });
     wrangler.on("error", (err) => {
       fail(`could not start wrangler via ${cmd}: ${err.message}`);
       shutdown(1);

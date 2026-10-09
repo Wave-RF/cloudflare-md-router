@@ -33,7 +33,7 @@ What must stay true. Preserve the named invariant when you touch its code. The W
 5. **`mdPathFor` default contract** — strip a trailing slash and append `.md`; the special case `/` → `/index.md`. A custom `mdPathFor` is consumer-supplied; the result is resolved against the request origin.
 6. **The `ASSETS` Fetcher binding + `run_worker_first`** — the worker needs an `ASSETS` binding (`MdRouterEnv.ASSETS: Fetcher`) and, in the consumer's `wrangler.jsonc`, `run_worker_first: true` so the worker sees the request before Cloudflare's static-asset matcher (otherwise it only runs on 404s). This is a documented contract — preserve it in code and docs.
 7. **Bounded fetches** — at most the two `ASSETS.fetch` calls the current flow makes (the twin, then the HTML fallback). No recursive or unbounded fetching. The UA regex runs on attacker-controlled input, so keep it **linear** (no catastrophic backtracking / ReDoS).
-8. **ESM + raw-TS shipping, Workers runtime** — `type: module`; ships `.ts` with `.ts` import specifiers; no CommonJS, no build step, no Node-only APIs. `engines.node` (`>=18`) documents the consumer-tooling floor, not the runtime.
+8. **ESM + raw-TS shipping, Workers runtime** — `type: module`; ships `.ts` with `.ts` import specifiers; no CommonJS, no build step, no Node-only APIs. `engines.node` (`>=18`) documents the consumer-tooling floor, not the runtime. The one exception is the `bin/` dev CLI, which needs Node 20+ (recursive `fs.watch` on Linux); the README says so, and `engines` stays at 18 so Worker-only consumers aren't excluded.
 
 ## Build & Test Commands
 
@@ -160,7 +160,7 @@ release-please-config.json, .release-please-manifest.json  → release automatio
 
 ## CI / Automation
 
-- **`ci.yml`** — Biome `check` + `tsc --noEmit` on every PR/push (Node 24; pnpm 11 needs Node ≥ 22.13, so CI doesn't run on the package's `engines` floor — that floor documents the consumer toolchain).
+- **`ci.yml`** — Biome `check` + `tsc --noEmit` + `node --test` on every PR/push (Node 24; pnpm 11 needs Node ≥ 22.13, so CI doesn't run on the package's `engines` floor — that floor documents the consumer toolchain).
 - **`pr-title.yml`** — Conventional-Commit title check (required); skips the check for `dependabot[bot]`.
 - **`publish-npm.yml`** — release-please + OIDC publish to `latest`/prerelease, and the `@dev` content-addressed channel on every main push. ONE file (npm allows one trusted-publisher filename per package).
 - **`dependabot.yml` + `dependabot-automerge.yml`** — weekly grouped dep/action bumps; patch/minor auto-merge after CI, major held for review.

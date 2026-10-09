@@ -3,6 +3,11 @@
 import { dev } from "./dev.mjs";
 import { HELP, parseArgs, resolveOptions } from "./lib.mjs";
 
+if (Number(process.versions.node.split(".")[0]) < 20) {
+  console.error(`cloudflare-md-router dev needs Node 20+ (running ${process.versions.node})`);
+  process.exit(1);
+}
+
 const [command, ...rest] = process.argv.slice(2);
 
 if (command !== "dev") {

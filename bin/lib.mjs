@@ -70,6 +70,12 @@ export function parseJsonc(text) {
   return JSON.parse(stripJsonc(text.replace(/^﻿/, "")));
 }
 
+/** Quote one shell word (POSIX single quotes; left bare when plainly safe, or on Windows). */
+export function shellQuote(word) {
+  if (/^[\w@%+=:,./-]+$/.test(word) || process.platform === "win32") return word;
+  return `'${word.replace(/'/g, "'\\''")}'`;
+}
+
 /* ----------------------------------------------------------------- TOML */
 
 /** Pull `assets.directory` and `main` out of a wrangler.toml — only the top-level (non-env) ones.
@@ -111,7 +117,12 @@ export function readWranglerConfig(root, explicit) {
   if (!file) return { file: undefined };
   const text = readFileSync(file, "utf8");
   if (file.endsWith(".toml")) return { file, ...parseWranglerToml(text) };
-  const json = parseJsonc(text);
+  let json;
+  try {
+    json = parseJsonc(text);
+  } catch (err) {
+    throw new Error(`could not parse ${file}: ${err.message}`);
+  }
   const assets = json.assets;
   return {
     file,
@@ -288,6 +299,15 @@ export function resolveOptions(flags, env, cwd) {
   if (relative(root, outDir) === "" || relative(root, outDir).startsWith("..")) {
     throw new Error(`output dir ${outDir} must be a subdirectory of the site root ${root}`);
   }
+  const protectedDirs = ["src", "public", "node_modules", ".git"].map((d) => join(root, d));
+  if (
+    protectedDirs.some((d) => outDir === d || outDir.startsWith(`${d}/`)) ||
+    existsSync(join(outDir, "package.json"))
+  ) {
+    throw new Error(
+      `output dir ${outDir} looks like source, not build output; it is pruned on every build`
+    );
+  }
   const staging = join(dirname(outDir), `.dev-${basename(outDir)}`);
 
   const watch = [
@@ -319,8 +339,11 @@ export function buildInvocation(opts) {
   const stagingRel = relative(opts.root, opts.staging) || opts.staging;
   if (opts.buildOverride) {
     let command = opts.buildOverride;
-    if (command.includes("{outDir}")) command = command.split("{outDir}").join(stagingRel);
-    else if (opts.outDirFlag) command = `${command} ${opts.outDirFlag} ${stagingRel}`;
+    if (command.includes("{outDir}")) {
+      command = command.split("{outDir}").join(shellQuote(stagingRel));
+    } else if (opts.outDirFlag) {
+      command = `${command} ${shellQuote(opts.outDirFlag)} ${shellQuote(stagingRel)}`;
+    }
     return { shell: command };
   }
   const extra = opts.outDirFlag ? [opts.outDirFlag, stagingRel] : [];

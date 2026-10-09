@@ -261,3 +261,22 @@ test("classifyWatch / matchesName", () => {
   assert.ok(!matchesName(names, "package-lock.json"));
   assert.ok(!matchesName(names, "README.md"));
 });
+
+test("shellQuote leaves safe words bare and quotes the rest", async () => {
+  const { shellQuote } = await import("../bin/lib.mjs");
+  assert.equal(shellQuote(".dev-dist"), ".dev-dist");
+  assert.equal(shellQuote("my dir;rm"), "'my dir;rm'");
+  assert.equal(shellQuote("it's"), "'it'\\''s'");
+});
+
+test("resolveOptions refuses an output dir that looks like source", () => {
+  const root = site({ "package.json": "{}" });
+  assert.throws(
+    () => resolveOptions(parseArgs(["--out-dir", "src"]), {}, root),
+    /looks like source/
+  );
+  assert.throws(
+    () => resolveOptions(parseArgs(["--out-dir", "node_modules"]), {}, root),
+    /looks like source/
+  );
+});

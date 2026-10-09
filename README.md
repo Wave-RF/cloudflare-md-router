@@ -105,13 +105,13 @@ pnpm exec cloudflare-md-router dev
 { "scripts": { "dev:worker": "cloudflare-md-router dev" } }
 ```
 
-Needs Node 20+ (recursive `fs.watch`) and a locally-installed `wrangler` — it is run through your package manager and never downloaded. Add the staging directory (`.dev-<outDir>`, so `.dev-dist/` by default) to `.gitignore`.
+Needs Node 20+ (recursive `fs.watch`; checked at startup, tested in CI on Node 24 only; POSIX is the supported platform, Windows is best-effort) and a locally-installed `wrangler` — it is run through your package manager and never downloaded. Add the staging directory (`.dev-<outDir>`, so `.dev-dist/` by default) to `.gitignore`.
 
 | Option | Default |
 | ------ | ------- |
 | `--build <cmd>` (`MD_ROUTER_DEV_BUILD`) | the site's `build` script, via the package manager its lockfile indicates (pnpm, yarn, bun, else npm; the lockfile is searched up the tree, so monorepos work). A custom command runs through the shell with `node_modules/.bin` on `PATH`, so `--build "astro build"` works. |
 | `--out-dir <dir>` | `assets.directory` from `wrangler.jsonc` / `wrangler.json` / `wrangler.toml` (JSONC comments and trailing commas are fine), else `dist`. The staging directory is `.dev-<name>` next to it. |
-| `--out-dir-flag <flag>` | `--outDir`: appended to the build as `<flag> <staging>` so it writes to staging, not the served directory. Pass `""` to disable. Put `{outDir}` anywhere in `--build` to place the path yourself (and skip the flag). The path is also exported as `MD_ROUTER_DEV_OUT_DIR`. |
+| `--out-dir-flag <flag>` | `--outDir`: appended to the build as `<flag> <staging>` so it writes to staging, not the served directory. Pass `""` to disable. Put `{outDir}` anywhere in `--build` to place the path yourself (and skip the flag). The staging path (relative to the site root) is also exported as `MD_ROUTER_DEV_OUT_DIR`; a relative `--out-dir` resolves against the wrangler config's directory. |
 | `--watch <path>` | Added to the defaults: `src/`, `public/`, `astro.config.*`, `vite.config.*`, `tsconfig.json`, `package.json`, `.env*`. Directories recurse; other entries are root-level file names (a trailing `*` matches a prefix). Repeatable or comma-separated. `--no-default-watch` drops the defaults. The Worker directory is deliberately not watched — wrangler reloads the Worker itself. |
 | `--port <n>` (`PORT`) | `4321`. If it is taken, the next free port (up to 19 higher, both IPv4 and IPv6 loopback checked) is used and printed — wrangler itself would just die on a busy explicit port. |
 | `--config <file>` | `wrangler.jsonc`, `wrangler.json`, then `wrangler.toml` in the root. |
@@ -119,7 +119,7 @@ Needs Node 20+ (recursive `fs.watch`) and a locally-installed `wrangler` — it 
 | `--strict` (`MD_ROUTER_DEV_STRICT=1`) | off. See below. |
 | `-- <args>` | everything after `--` is passed to `wrangler dev`. |
 
-Flags win over env. Build output and a build that exits 0 but writes nothing are both handled: the previous good build stays up.
+Flags win over env. A failed build, and a build that exits 0 but writes nothing, are both handled: the previous good build stays up. On a cold start with no output directory yet, the first build must succeed or the command exits 1.
 
 ### Relaxing checks in watch builds
 
