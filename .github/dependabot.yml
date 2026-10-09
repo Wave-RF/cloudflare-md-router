@@ -10,8 +10,25 @@ updates:
       day: monday
     open-pull-requests-limit: 5
     groups:
+      # semantic-release and the plugins that read the conventional-commits
+      # preset move together: the preset and the notes generator are coupled
+      # through conventional-changelog-writer. `pnpm run check:release` (in CI)
+      # fails the PR if a pairing can't render release notes.
+      release:
+        patterns:
+          - "semantic-release"
+          - "@semantic-release/*"
+          - "conventional-changelog-*"
       npm:
         patterns: ["*"]
+    # Preset 10.x needs conventional-changelog-writer@9, which no stable
+    # @semantic-release/release-notes-generator uses yet (14.x bundles writer 8;
+    # the fix is in 15.0.0-beta). Remove this once 15.x is stable, and take the
+    # preset + notes-generator majors in one PR.
+    # https://github.com/semantic-release/release-notes-generator/issues/1027
+    ignore:
+      - dependency-name: "conventional-changelog-conventionalcommits"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: deps
 

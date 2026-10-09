@@ -49,3 +49,8 @@ jobs:
 
       - name: Typecheck (tsc --noEmit)
         run: pnpm run typecheck
+
+      # The preset and the notes generator are coupled; an incompatible bump only
+      # fails at generateNotes, mid-release on main. Catch it on the PR instead.
+      - name: Release config (analyzer + notes, offline)
+        run: pnpm run check:release
