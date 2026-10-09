@@ -8,7 +8,7 @@ The mandatory pre-push self-review. A push to a PR branch is blocked until a mar
 ## Preconditions
 
 1. **Commit your work.** Reviews and markers are keyed to HEAD/tree, so the tree must be settled first.
-2. **`pnpm run verify` is green for the current tree** (biome check + tsc --noEmit). The push also needs its `tmp/verify-passed-tree-<TREE>` marker, which `pnpm run verify` writes on success.
+2. **`pnpm run verify` is green for the current tree** (biome check + tsc --noEmit + node --test + the release-config check). The push also needs its `tmp/verify-passed-tree-<TREE>` marker, which `pnpm run verify` writes on success.
 
 ## 1. See the change and the reviewer set
 

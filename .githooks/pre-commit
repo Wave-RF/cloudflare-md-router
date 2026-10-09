@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Runs `pnpm run verify` (biome check + node --test) unless scripts/ci-marker.sh
-# says it already passed for the current tree (cached marker). Universal — applies
-# to humans and Claude Code alike. Bypass: `git commit --no-verify`.
+# Runs `pnpm run verify` (biome check + tsc --noEmit + node --test + the
+# release-config check) unless scripts/ci-marker.sh says it already passed for
+# the current tree (cached marker). Universal — applies to humans and Claude
+# Code alike. Bypass: `git commit --no-verify`.
 #
 # Installed by `pnpm run setup` (git config core.hooksPath .githooks).
 
