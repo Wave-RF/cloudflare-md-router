@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { syncDirs } from "../bin/dev.mjs";
+import { ChildSet, syncDirs } from "../bin/dev.mjs";
 
 const CLI = fileURLToPath(new URL("../bin/cli.mjs", import.meta.url));
 const TIMEOUT = { timeout: 60_000 };
@@ -62,6 +62,11 @@ const src = readFileSync("src/page.txt", "utf8");
 if (src.includes("SLOW")) setInterval(() => {}, 1000);
 else if (src.includes("FAIL")) { mkdirSync(out, { recursive: true }); writeFileSync(out + "/index.html", "HALF-BUILT"); process.exit(1); }
 else {
+  // Like Astro's .astro/types.d.ts: a cache the build rewrites OUTSIDE its output dir.
+  if (process.env.FIXTURE_CACHE) {
+    mkdirSync(process.env.FIXTURE_CACHE, { recursive: true });
+    writeFileSync(process.env.FIXTURE_CACHE + "/types.d.ts", String(Date.now()));
+  }
   mkdirSync(out + "/sub", { recursive: true });
   writeFileSync(out + "/index.html", src);
   writeFileSync(out + "/sub/" + src + ".html", src);
@@ -92,13 +97,13 @@ setInterval(() => {}, 1000);
 }
 
 /** Start the CLI in `site.root`; every pid the fixture records is killed when the test ends. */
-function startDev(t, site, args) {
+function startDev(t, site, args, env = {}) {
   const port = nextPort;
   nextPort += 20;
   const child = spawn(process.execPath, [CLI, "dev", "--port", String(port), ...args], {
     cwd: site.root,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, PORT: undefined, FIXTURE_LOGS: site.logs },
+    env: { ...process.env, PORT: undefined, FIXTURE_LOGS: site.logs, ...env },
   });
   let log = "";
   child.stdout.on("data", (b) => {
@@ -260,26 +265,77 @@ test("wrangler dying of a signal takes dev down with a non-zero exit", TIMEOUT, 
   assertAllGone(site);
 });
 
-test(
-  "--watch . builds once per edit: its own output, staging and node_modules are ignored",
-  TIMEOUT,
-  async (t) => {
-    const site = makeSite();
-    const dev = startDev(t, site, ["--build", "node build.mjs", "--watch", "."]);
-    await until(() => has(site, "wrangler.pid"), "wrangler to start");
-    await sleep(1500);
-    const builds = () => read(site, "build.pids").trim().split("\n").length;
-    assert.equal(builds(), 1, "no rebuild from the first build's own output");
-    writeFileSync(join(site.root, "src/page.txt"), "v2");
-    await until(() => existsSync(join(site.out, "sub", "v2.html")), "v2 to land");
-    writeFileSync(join(site.root, "node_modules/noise.txt"), "x");
-    await sleep(1500);
-    assert.equal(builds(), 2, `one build per edit, got ${builds()}:\n${dev.log()}`);
-    dev.child.kill("SIGINT");
-    assert.equal(await dev.exited, 0);
-    assertAllGone(site);
+for (const [label, cache, git] of [
+  ["a gitignored cache dir", "generated", true],
+  ["a framework cache dir outside git (.astro)", ".astro", false],
+]) {
+  test(
+    `--watch . builds once per edit, though the build also writes ${label}`,
+    TIMEOUT,
+    async (t) => {
+      const site = makeSite();
+      mkdirSync(join(site.root, "config"));
+      writeFileSync(join(site.root, "config/site.json"), "{}");
+      if (git) {
+        writeFileSync(join(site.root, ".gitignore"), `${cache}/\n`);
+        assert.equal(spawnSync("git", ["init", "-q", site.root]).status, 0);
+      }
+      const dev = startDev(
+        t,
+        site,
+        ["--build", "node build.mjs", "--watch", ".,config/site.json,nope"],
+        { FIXTURE_CACHE: cache }
+      );
+      await until(() => has(site, "wrangler.pid"), "wrangler to start");
+      assert.ok(existsSync(join(site.root, cache, "types.d.ts")), "the build wrote its cache");
+      assert.match(dev.log(), /not watching --watch config\/site\.json: .*watch its directory/);
+      assert.match(dev.log(), /not watching --watch nope: no such directory/);
+      assert.match(dev.log(), /watching \.\/, astro/);
+      await sleep(1500);
+      const builds = () => read(site, "build.pids").trim().split("\n").length;
+      assert.equal(builds(), 1, `no rebuild from the first build's own writes:\n${dev.log()}`);
+      writeFileSync(join(site.root, "src/page.txt"), "v2");
+      await until(() => existsSync(join(site.out, "sub", "v2.html")), "v2 to land");
+      writeFileSync(join(site.root, "node_modules/noise.txt"), "x");
+      await sleep(1500);
+      assert.equal(builds(), 2, `one build per edit, got ${builds()}:\n${dev.log()}`);
+      dev.child.kill("SIGINT");
+      assert.equal(await dev.exited, 0);
+      assertAllGone(site);
+    }
+  );
+}
+
+test("ChildSet drops a build's record once its group is empty, and stops strays it left", {
+  ...TIMEOUT,
+  skip: process.platform === "win32" ? "process groups are POSIX" : false,
+}, async () => {
+  const children = new ChildSet({ grace: 2000 });
+  const quick = spawn(process.execPath, ["-e", "0"], { detached: true, stdio: "ignore" });
+  children.add(quick, { group: true });
+  assert.equal(children.size, 1);
+  await until(() => children.size === 0, "the finished build's record to be dropped", 5000);
+  // A "build" that backgrounds a process and exits: its group outlives it.
+  const leaky = spawn("sh", ["-c", "sleep 30 & echo $!"], {
+    detached: true,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  let out = "";
+  leaky.stdout.on("data", (b) => {
+    out += b;
+  });
+  children.add(leaky, { group: true });
+  await until(() => out.trim() !== "", "the stray's pid", 5000);
+  const stray = Number(out.trim());
+  try {
+    await until(() => children.size === 0, "the stray to be stopped and the record dropped", 8000);
+    assertGone(stray, "the stray");
+  } finally {
+    try {
+      process.kill(stray, "SIGKILL");
+    } catch {}
   }
-);
+});
 
 test(
   "a build that writes to the output dir directly is called out, not reported as empty",

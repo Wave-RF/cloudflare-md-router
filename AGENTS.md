@@ -45,7 +45,7 @@ pnpm run check          # biome check . (lint + format check) — the CI gate
 pnpm run format         # biome format --write . (auto-fix formatting)
 pnpm run lint           # biome lint .
 pnpm run test           # node --test (the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test that asserts no child outlives the CLI)
-pnpm run verify         # biome check . && pnpm run typecheck && pnpm run test, then write the tree marker
+pnpm run verify         # biome check . && pnpm run typecheck && pnpm run test && pnpm run check:release, then write the tree marker
 ```
 
 The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `tsc --noEmit` + those. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.

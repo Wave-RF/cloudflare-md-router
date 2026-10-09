@@ -10,13 +10,14 @@
  *
  * Node built-ins only; never imported by the Worker (`src/` does not reference `bin/`). */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync, watch } from "node:fs";
 import { cp, readdir, rm, stat } from "node:fs/promises";
 import { delimiter, dirname, join, relative, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   buildInvocation,
+  canonicalPath,
   classifyWatch,
   descendantsOf,
   execLocalCommand,
@@ -35,8 +36,11 @@ const DEBOUNCE_MS = 300;
 const GRACE_MS = 5000;
 const REAP_MS = 2000;
 const POSIX = process.platform !== "win32";
-/** Never a build input, and written to by the build, wrangler or git: watching them loops. */
-const NOISE_DIRS = /(^|[\\/])(node_modules|\.git|\.wrangler)([\\/]|$)/;
+/** Never a build input, and written to by the build, wrangler, git or a framework's cache (Astro
+ * writes `.astro/types.d.ts` on every build): watching them loops. The fallback for sites outside
+ * git; inside git, anything git ignores is skipped too (see `gitIgnoredFilter`). */
+const NOISE_DIRS =
+  /(^|[\\/])(node_modules|\.git|\.wrangler|\.astro|\.svelte-kit|\.next|\.nuxt|\.output|\.cache|\.turbo|\.vercel|\.parcel-cache)([\\/]|$)/;
 
 /** node_modules/.bin of the root and every ancestor, so a custom `--build "astro build"` resolves. */
 function binPath(root) {
@@ -78,6 +82,159 @@ async function prune(stagingDir, distDir) {
 
 const hasOutput = (dir) => existsSync(dir) && readdirSync(dir).length > 0;
 
+/** Paths (relative to `root`) minus the ones git ignores — a framework cache such as `.astro/` is
+ * written by every build, so under `--watch .` it would trigger the next one. Outside a git work
+ * tree, or if git fails, nothing is dropped. */
+export function gitIgnoredFilter(root) {
+  const probe = spawnSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (probe.status !== 0 || probe.stdout.trim() !== "true") return (files) => files;
+  return (files) => {
+    if (files.length === 0) return files;
+    const r = spawnSync("git", ["-C", root, "check-ignore", "--stdin", "-z"], {
+      input: `${files.join("\0")}\0`,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    if (r.status !== 0 && r.status !== 1) return files; // 1 = none ignored; anything else = error
+    const ignored = new Set(r.stdout.split("\0").filter(Boolean));
+    return files.filter((f) => !ignored.has(f));
+  };
+}
+
+/** Every child the loop starts, tracked until it is gone; `stopAll` never returns before that.
+ *
+ * - A build runs in its own process group on POSIX (`detached`; it never reads the terminal), so
+ *   one kill(-pgid) reaches everything a package manager or shell started under it — dash, Debian's
+ *   sh, does not exec its last command, so signalling only the shell would orphan the real build.
+ *   Its record is dropped as soon as its group is seen empty, so a pgid the OS later reuses is never
+ *   signalled. A build that exits but leaves processes in its group has left strays: they get
+ *   SIGTERM at once and SIGKILL after the grace period.
+ * - wrangler must NOT get its own group: it reads hotkeys from the terminal, and a background
+ *   process group that reads the TTY is stopped by SIGTTIN. So it is run directly with node (no
+ *   package manager or shell between us), and at shutdown its descendants are snapshotted and
+ *   signalled too, in case they outlive it (the package-manager fallback, or a crashed wrapper). */
+export class ChildSet {
+  constructor({ log = () => {}, grace = GRACE_MS, reap = REAP_MS } = {}) {
+    this.recs = new Set();
+    this.log = log;
+    this.grace = grace;
+    this.reap = reap;
+  }
+
+  get size() {
+    return this.recs.size;
+  }
+
+  add(proc, { group = false } = {}) {
+    const rec = { proc, group: group && POSIX, exited: !proc.pid, tree: [] };
+    if (rec.exited) return rec; // never started (spawn error): nothing to track
+    this.recs.add(rec);
+    proc.on("exit", () => {
+      rec.exited = true;
+      rec.exitedAt = Date.now();
+      this.settle(rec);
+    });
+    return rec;
+  }
+
+  /** Drop an exited child's record once nothing of it is left; deal with a build's strays. */
+  settle(rec) {
+    if (!rec.exited || !this.recs.has(rec)) return;
+    if (!rec.group || !isAlive(-rec.proc.pid)) {
+      this.recs.delete(rec);
+      return;
+    }
+    const late = Date.now() - rec.exitedAt >= this.grace;
+    if (!rec.straysTold || late) {
+      if (!rec.straysTold) this.log(`build exited but left processes in its group — stopping them`);
+      rec.straysTold = true;
+      try {
+        process.kill(-rec.proc.pid, late ? "SIGKILL" : "SIGTERM");
+      } catch {}
+    }
+    setTimeout(() => this.settle(rec), 100).unref();
+  }
+
+  /** Re-check every exited child (before each build). */
+  sweep() {
+    for (const rec of this.recs) this.settle(rec);
+  }
+
+  topAlive(rec) {
+    return rec.group ? isAlive(-rec.proc.pid) : !rec.exited;
+  }
+
+  alive(rec) {
+    return this.topAlive(rec) || rec.tree.length > 0;
+  }
+
+  /** Forget snapshotted descendants that have died: a pid seen dead is never signalled again, so a
+   * reused pid can't be hit. */
+  prune(rec) {
+    rec.tree = rec.tree.filter(isAlive);
+  }
+
+  signal(rec, sig, pids = []) {
+    try {
+      if (rec.group) process.kill(-rec.proc.pid, sig);
+      else if (!rec.exited) rec.proc.kill(sig);
+    } catch {}
+    for (const pid of pids) {
+      try {
+        process.kill(pid, sig);
+      } catch {}
+    }
+  }
+
+  /** SIGTERM everything, SIGKILL whatever is left after the grace period, and resolve only once it
+   * is all gone (or, if the OS will not reap it, after saying so). Returns pids it could not
+   * confirm stopped. */
+  async stopAll() {
+    const table = processTable();
+    const recs = [...this.recs].filter((r) => this.topAlive(r));
+    for (const rec of recs) {
+      if (!rec.group) rec.tree = descendantsOf(table, rec.proc.pid);
+      this.signal(rec, "SIGTERM");
+    }
+    const deadline = Date.now() + this.grace;
+    const busy = () =>
+      recs.filter((r) => {
+        this.prune(r);
+        return this.alive(r);
+      });
+    while (busy().length > 0 && Date.now() < deadline) {
+      for (const rec of recs) {
+        // The direct child exited but left descendants behind (a wrapper that didn't forward the
+        // signal): they are orphans now, so tell them directly.
+        if (rec.exited && !rec.orphansTold && rec.tree.length > 0) {
+          rec.orphansTold = true;
+          this.signal(rec, "SIGTERM", rec.tree);
+        }
+      }
+      await sleep(50);
+    }
+    const stubborn = busy();
+    if (stubborn.length === 0) return [];
+    this.log(`still running ${this.grace / 1000}s after SIGTERM — sending SIGKILL`);
+    const now = processTable();
+    for (const rec of stubborn) {
+      if (!rec.group && !rec.exited) {
+        rec.tree = [...new Set([...rec.tree, ...descendantsOf(now, rec.proc.pid)])];
+      }
+      this.signal(rec, "SIGKILL", rec.tree);
+    }
+    const reapBy = Date.now() + this.reap;
+    while (busy().length > 0 && Date.now() < reapBy) await sleep(50);
+    return busy().flatMap((r) => [
+      ...(this.topAlive(r) ? [r.group ? `group ${r.proc.pid}` : r.proc.pid] : []),
+      ...r.tree,
+    ]);
+  }
+}
+
 /** Cheap fingerprint of a directory's top level (its mtime and each entry's), to tell whether a
  * build wrote into it. null if it doesn't exist. */
 function fingerprint(dir) {
@@ -96,6 +253,7 @@ export async function dev(opts) {
   const log = (msg) => console.log(`${tag} ${msg}`);
   // Loud-failure banner: bold red + terminal bell (most terminals flash/bounce).
   const fail = (msg) => console.log(`${tag} \x1b[1;31m${msg}\x1b[0m\x07`);
+  const warn = (msg) => console.log(`${tag} \x1b[33m${msg}\x1b[0m`);
 
   const stagingRel = relative(opts.root, opts.staging) || opts.staging;
   const outRel = relative(opts.root, opts.outDir) || opts.outDir;
@@ -108,7 +266,6 @@ export async function dev(opts) {
   };
 
   let shuttingDown = false;
-  let activeBuild = null;
   let wrangler;
   let timer;
   const watchers = [];
@@ -117,85 +274,7 @@ export async function dev(opts) {
     exitResolve = r;
   });
   let exitCode = 0;
-
-  /* Every child we start is tracked until it is gone, and we never exit before that.
-   *
-   * - The build runs in its own process group on POSIX (`detached`; it never reads the terminal),
-   *   so one kill(-pgid) reaches everything a package manager or shell started under it — dash,
-   *   Debian's sh, does not exec its last command, so signalling only the shell would orphan it.
-   * - wrangler must NOT get its own group: it reads hotkeys from the terminal, and a background
-   *   process group that reads the TTY is stopped by SIGTTIN. So it is run directly with node (no
-   *   package manager or shell between us), and at shutdown its descendants are snapshotted and
-   *   signalled too, in case they outlive it (the package-manager fallback, or a crashed wrapper). */
-  const children = new Set();
-  const track = (proc, group) => {
-    const rec = { proc, group: group && POSIX, exited: !proc.pid, tree: [] };
-    proc.on("exit", () => {
-      rec.exited = true;
-    });
-    proc.on("error", () => {
-      if (!proc.pid || proc.exitCode !== null) rec.exited = true;
-    });
-    children.add(rec);
-    return rec;
-  };
-  const topAlive = (rec) => (rec.group ? isAlive(-rec.proc.pid) : !rec.exited);
-  const recAlive = (rec) => topAlive(rec) || rec.tree.some(isAlive);
-  const signal = (rec, sig, pids = []) => {
-    try {
-      if (rec.group) process.kill(-rec.proc.pid, sig);
-      else if (!rec.exited) rec.proc.kill(sig);
-    } catch {}
-    for (const pid of pids) {
-      try {
-        process.kill(pid, sig);
-      } catch {}
-    }
-  };
-
-  /** SIGTERM everything we started, SIGKILL whatever is left after GRACE_MS, and resolve only once
-   * it is all gone (or, if the OS will not reap it, after saying so). */
-  async function stopChildren() {
-    const recs = [...children].filter((r) => r.proc.pid && recAlive(r));
-    if (recs.length === 0) return;
-    const table = processTable();
-    for (const rec of recs) {
-      if (!rec.group) rec.tree = descendantsOf(table, rec.proc.pid);
-      signal(rec, "SIGTERM");
-    }
-    const deadline = Date.now() + GRACE_MS;
-    while (recs.some(recAlive) && Date.now() < deadline) {
-      for (const rec of recs) {
-        // The direct child exited but left descendants behind (a wrapper that didn't forward the
-        // signal): they are orphans now, so tell them directly.
-        if (rec.exited && !rec.orphansTold && rec.tree.some(isAlive)) {
-          rec.orphansTold = true;
-          signal(rec, "SIGTERM", rec.tree);
-        }
-      }
-      await sleep(50);
-    }
-    if (!recs.some(recAlive)) return;
-    const stubborn = recs.filter(recAlive);
-    log(`still running ${GRACE_MS / 1000}s after SIGTERM — sending SIGKILL`);
-    const now = processTable();
-    for (const rec of stubborn) {
-      if (!rec.group && !rec.exited) {
-        rec.tree = [...new Set([...rec.tree, ...descendantsOf(now, rec.proc.pid)])];
-      }
-      signal(rec, "SIGKILL", rec.tree);
-    }
-    const reapBy = Date.now() + REAP_MS;
-    while (stubborn.some(recAlive) && Date.now() < reapBy) await sleep(50);
-    const left = stubborn
-      .filter(recAlive)
-      .flatMap((r) => [
-        ...(topAlive(r) ? [r.group ? `group ${r.proc.pid}` : r.proc.pid] : []),
-        ...r.tree.filter(isAlive),
-      ]);
-    if (left.length > 0)
-      fail(`could not confirm these stopped: ${left.join(", ")} — check with ps`);
-  }
+  const children = new ChildSet({ log });
 
   function runBuild() {
     return new Promise((done) => {
@@ -205,14 +284,9 @@ export async function dev(opts) {
         inv.shell !== undefined
           ? spawn(inv.shell, { ...base, shell: true })
           : spawn(inv.cmd, inv.args, { ...base, shell: process.platform === "win32" });
-      track(child, true);
-      activeBuild = child;
-      const finish = (code) => {
-        if (activeBuild === child) activeBuild = null;
-        done(code);
-      };
-      child.on("error", () => finish(127)); // e.g. binary not found
-      child.on("close", (code) => finish(code ?? 1));
+      children.add(child, { group: true });
+      child.on("error", () => done(127)); // e.g. binary not found
+      child.on("close", (code) => done(code ?? 1));
     });
   }
 
@@ -236,6 +310,7 @@ export async function dev(opts) {
       // Start from an empty staging dir so a stale file from a failed build can never be synced.
       await rm(opts.staging, { recursive: true, force: true });
       if (shuttingDown) break;
+      children.sweep();
       const outBefore = fingerprint(opts.outDir);
       const code = await runBuild();
       if (shuttingDown) break;
@@ -278,16 +353,37 @@ export async function dev(opts) {
     building = false;
   }
 
+  // Changes are batched per debounce window, and the batch loses anything git ignores (a framework
+  // cache the build itself writes) before it may trigger a build.
+  const pending = new Set();
+  const notIgnored = gitIgnoredFilter(opts.root);
   function onChange(file) {
-    pendingReason = file;
+    pending.add(file);
     clearTimeout(timer);
-    timer = setTimeout(rebuild, DEBOUNCE_MS);
+    timer = setTimeout(flush, DEBOUNCE_MS);
+  }
+  function flush() {
+    if (shuttingDown) return;
+    const files = notIgnored([...pending]);
+    pending.clear();
+    if (files.length === 0) return;
+    pendingReason = files.length > 1 ? `${files[0]} +${files.length - 1} more` : files[0];
+    void rebuild();
   }
 
   function startWatchers() {
-    const { dirs, names } = classifyWatch(opts.root, opts.watch);
+    const { dirs: rawDirs, names, dropped } = classifyWatch(opts.root, opts.watch);
+    for (const { entry, why } of dropped) {
+      if (opts.userWatch?.includes(entry)) warn(`not watching --watch ${entry}: ${why}`);
+    }
+    // Canonical, and without dirs already covered by another (`--watch .` contains src/).
+    const canon = [...new Set(rawDirs.map((d) => canonicalPath(d)))];
+    const dirs = canon.filter(
+      (d) => !canon.some((o) => o !== d && d.startsWith(o === sep ? o : o + sep))
+    );
     // The build's own output (and staging) is never an input: a watch that covers it — `--watch .`
-    // — would otherwise rebuild forever.
+    // — would otherwise rebuild forever. Both are canonical (resolveOptions), as are `dirs`, so the
+    // prefix check matches the spelling the filesystem reports.
     const ignoredRoots = [opts.outDir, opts.staging];
     const underIgnored = (abs) => ignoredRoots.some((r) => abs === r || abs.startsWith(r + sep));
     for (const dir of dirs) {
@@ -321,7 +417,12 @@ export async function dev(opts) {
     exitCode = code;
     clearTimeout(timer);
     for (const w of watchers) w.close(); // open watchers would keep the event loop alive
-    stopChildren()
+    children
+      .stopAll()
+      .then((left) => {
+        if (left.length > 0)
+          fail(`could not confirm these stopped: ${left.join(", ")} — check with ps`);
+      })
       .catch((err) => fail(`stopping children failed: ${err?.stack ?? err}`))
       .finally(() => exitResolve(exitCode));
   }
@@ -406,7 +507,7 @@ export async function dev(opts) {
       stdio: "inherit",
       shell: !wranglerJs && process.platform === "win32",
     });
-    track(wrangler, false);
+    children.add(wrangler);
     wrangler.on("error", (err) => {
       fail(
         `could not start wrangler via ${cmd}: ${err.message} — install it in the site: ${opts.pm} add -D wrangler`
@@ -418,7 +519,7 @@ export async function dev(opts) {
     wrangler.on("exit", (code, sig) => shutdown(code ?? (sig ? 1 : 0)));
 
     const { dirs, names } = startWatchers();
-    const shown = [...dirs.map((d) => `${relative(opts.root, d)}/`), ...names];
+    const shown = [...dirs.map((d) => `${relative(opts.root, d) || "."}/`), ...names];
     log(`watching ${shown.join(", ") || "nothing"} — wrangler serves http://localhost:${port}`);
     log(
       opts.strict

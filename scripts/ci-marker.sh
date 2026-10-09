@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tree-keyed validation marker. `pnpm run verify` (biome check + tsc --noEmit)
+# Tree-keyed validation marker. `pnpm run verify` (biome check + tsc --noEmit +
+# node --test + the offline release-config check)
 # writes tmp/verify-passed-tree-<TREE>; the pre-commit hook skips re-running
 # verify when the marker is current, and the pre-push hook requires it for each
 # pushed commit's tree. Tree-keyed (not commit-keyed) so verify → commit → push

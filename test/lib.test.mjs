@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import {
   buildInvocation,
   canonicalPath,
+  checkOutDir,
   classifyWatch,
   descendantsOf,
   detectPackageManager,
+  dirWithin,
   execLocalCommand,
   findFreePort,
+  gitTrackedFiles,
   matchesName,
   parseArgs,
   parseJsonc,
@@ -22,10 +25,12 @@ import {
   resolveOptions,
   resolveWranglerBin,
   runScriptCommand,
+  sameDir,
   stripJsonc,
 } from "../bin/lib.mjs";
 
-const tmp = () => mkdtempSync(join(tmpdir(), "mdr-lib-"));
+// Canonical, so expectations match resolveOptions' canonical paths (macOS tmp is /var → /private/var).
+const tmp = () => canonicalPath(mkdtempSync(join(tmpdir(), "mdr-lib-")));
 const write = (dir, name, text) => {
   mkdirSync(dirname(join(dir, name)), { recursive: true });
   writeFileSync(join(dir, name), text);
@@ -300,14 +305,24 @@ test("buildInvocation: default script, appended flag, {outDir} placeholder, disa
 test("classifyWatch / matchesName", () => {
   const root = tmp();
   mkdirSync(join(root, "src"));
-  const { dirs, names } = classifyWatch(root, [
+  write(root, "config/site.json", "{}");
+  const { dirs, names, dropped } = classifyWatch(root, [
     "src",
     "public",
     "astro.config.*",
     ".env*",
     "package.json",
+    "config/site.json",
+    "content/posts",
   ]);
   assert.deepEqual(dirs, [join(root, "src")]);
+  assert.deepEqual(
+    dropped.map((d) => d.entry),
+    ["public", "config/site.json", "content/posts"],
+    "reported, so a user-given entry can be warned about"
+  );
+  assert.match(dropped[1].why, /watch its directory/);
+  assert.match(dropped[2].why, /no such directory/);
   assert.ok(
     !names.includes("public"),
     "a plain name that is not on disk is a missing dir: skipped"
@@ -416,5 +431,76 @@ test("output dir: one with a package.json, or git-tracked files, is refused", (t
   // Untracked build output is fine, and so is a dir that doesn't exist yet.
   assert.equal(resolveOptions(parseArgs([]), {}, root).outDir, join(root, "dist"));
   assert.equal(resolveOptions(parseArgs(["--out-dir", "new"]), {}, root).outDir, join(root, "new"));
+  rmSync(root, { recursive: true, force: true });
+});
+
+/* A Linux kernel on a case-insensitive mount (a macOS bind mount in Docker Desktop, WSL /mnt/c, ext4
+ * casefold): lookups ignore case, but realpath hands back the caller's spelling. Modelled in memory
+ * so it runs everywhere; `readdir` can be disabled to prove the (dev, ino) identity check holds on
+ * its own, without the case-fixing pass in canonicalPath. */
+function caseInsensitiveLinux(dirs, { listing = true, files = [] } = {}) {
+  const key = (p) => p.toLowerCase();
+  const ino = new Map(dirs.map((d, i) => [key(d), i + 1]));
+  const fileKeys = new Set(files.map(key));
+  const enoent = () => Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  return {
+    stat: (p) => {
+      if (!ino.has(key(p))) throw enoent();
+      return { dev: 7, ino: ino.get(key(p)) };
+    },
+    realpath: (p) => {
+      if (ino.has(key(p)) || fileKeys.has(key(p))) return p; // keeps the caller's case
+      throw enoent();
+    },
+    readdir: (p) => {
+      if (!listing) throw new Error("ENOTSUP");
+      return dirs.filter((d) => d !== "/" && key(dirname(d)) === key(p)).map((d) => basename(d));
+    },
+    exists: (p) => ino.has(key(p)) || fileKeys.has(key(p)),
+    tracked: () => [],
+  };
+}
+
+test("output dir: SRC is src on a case-insensitive Linux mount, by identity alone", () => {
+  const dirs = ["/", "/site", "/site/src", "/site/public", "/site/web"];
+  for (const listing of [false, true]) {
+    const fsx = caseInsensitiveLinux(dirs, { listing });
+    const check = (outDir, configDir = "/site") =>
+      checkOutDir(
+        { root: "/site", outDir, staging: `/site/.dev-${basename(outDir)}`, configDir },
+        fsx
+      );
+    assert.ok(sameDir("/site/SRC", "/site/src", fsx), "one directory, two spellings");
+    assert.ok(dirWithin("/site/Src/new/out", "/site/src", fsx), "inside, through a case variant");
+    assert.ok(dirWithin("/site/src", "/SITE", fsx), "the parent spelt differently");
+    assert.throws(() => check("/site/SRC"), /it is .*src\/, which holds source/i);
+    assert.throws(() => check("/site/Src/out"), /it is inside .*src\//i);
+    assert.throws(() => check("/SITE"), /must be a subdirectory of the site root/);
+    assert.throws(
+      () => check("/site/WEB", "/site/web"),
+      /it is .*web\/ \(it holds the wrangler config/i
+    );
+    check("/site/dist"); // not refused
+  }
+  // With the listing available, the spelling is fixed too (what the watcher's ignore check needs).
+  const fsx = caseInsensitiveLinux(dirs);
+  assert.equal(canonicalPath("/site/SRC/x", fsx), "/site/src/x");
+  assert.equal(canonicalPath("/SITE/Public", fsx), "/site/public");
+});
+
+test("output dir: git-tracked files are found whatever the case of the path", (t) => {
+  if (spawnSync("git", ["--version"]).status !== 0) {
+    t.skip("git is not installed");
+    return;
+  }
+  const root = site({ "src/a.ts": "" });
+  if (!existsSync(join(root, "SRC"))) {
+    t.skip("this filesystem is case-sensitive, so SRC is a different (missing) directory");
+    return;
+  }
+  assert.equal(spawnSync("git", ["init", "-q", root]).status, 0);
+  assert.equal(spawnSync("git", ["-C", root, "add", "src"]).status, 0);
+  // `git ls-files -- SRC` alone finds nothing, even with core.ignorecase; the guard's pathspec must.
+  assert.deepEqual(gitTrackedFiles(root, join(root, "SRC")), ["src/a.ts"]);
   rmSync(root, { recursive: true, force: true });
 });

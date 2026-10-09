@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
 export const DEFAULT_PORT = 4321;
 export const MAX_PORT = 65535;
@@ -307,19 +307,47 @@ export async function findFreePort(start, tries = PORT_TRIES, isFree = portFree)
 
 /* -------------------------------------------------------- output guard */
 
-/** The path as the filesystem spells it: symlinks resolved and, on a case-insensitive volume, the
- * on-disk case (`realpathSync.native` does that; the JS `realpathSync` keeps the input's case). A
+/** The filesystem calls the guard makes, injectable so a test can model a filesystem this machine
+ * doesn't have (a case-insensitive mount on Linux, where `realpath` keeps the caller's case). */
+export const REAL_FS = {
+  stat: (p) => statSync(p),
+  realpath: (p) => realpathSync.native(p),
+  readdir: (p) => readdirSync(p),
+  exists: (p) => existsSync(p),
+  tracked: (root, dir) => gitTrackedFiles(root, dir),
+};
+
+/** The path as the filesystem spells it: symlinks resolved, then each existing segment matched
+ * against its parent's listing, so `SRC` becomes `src` on a case-insensitive volume even where
+ * `realpath` keeps the input's case (Linux on a macOS bind mount, WSL `/mnt/c`, ext4 casefold). A
  * path that doesn't exist yet is canonicalised through its nearest existing ancestor. */
-export function canonicalPath(p) {
+export function canonicalPath(p, fsx = REAL_FS) {
   const abs = resolve(p);
   const rest = [];
+  let real;
   for (let dir = abs; ; dir = dirname(dir)) {
     try {
-      return join(realpathSync.native(dir), ...rest);
+      real = fsx.realpath(dir);
+      break;
     } catch {}
     if (dirname(dir) === dir) return abs;
     rest.unshift(basename(dir));
   }
+  const top = parse(real).root;
+  let fixed = top;
+  for (const seg of real.slice(top.length).split(sep).filter(Boolean)) {
+    let name = seg;
+    try {
+      const entries = fsx.readdir(fixed);
+      if (!entries.includes(seg)) {
+        const lower = seg.toLowerCase();
+        const hits = entries.filter((e) => e.toLowerCase() === lower);
+        if (hits.length === 1) name = hits[0];
+      }
+    } catch {}
+    fixed = join(fixed, name);
+  }
+  return join(fixed, ...rest);
 }
 
 /** Is `child` the same path as `parent`, or inside it? Both must already be canonical. */
@@ -328,11 +356,47 @@ export function isWithin(child, parent) {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-/** Git-tracked files under `dir`, relative to `root` (empty if not in a git work tree or no git). */
+/** `dev:ino` of a directory, or null if it doesn't exist. */
+function dirId(p, fsx) {
+  try {
+    const st = fsx.stat(p);
+    return `${st.dev}:${st.ino}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Directory identity, not spelling: is `child` the same directory as `parent`, or inside it? The
+ * child's existing ancestors (itself included) are compared to the parent by (dev, ino), so two
+ * spellings of one directory — case variants, bind aliases — can't slip past. Where the parent
+ * doesn't exist yet there is nothing to identify, so canonical paths are compared instead. */
+export function dirWithin(child, parent, fsx = REAL_FS) {
+  const c = canonicalPath(child, fsx);
+  const p = canonicalPath(parent, fsx);
+  const pid = dirId(p, fsx);
+  if (pid === null) return isWithin(c, p);
+  for (let d = c; ; d = dirname(d)) {
+    if (dirId(d, fsx) === pid) return true;
+    if (dirname(d) === d) return false;
+  }
+}
+
+/** Same directory, by identity when both exist. */
+export function sameDir(a, b, fsx = REAL_FS) {
+  const ia = dirId(a, fsx);
+  const ib = dirId(b, fsx);
+  if (ia !== null && ib !== null) return ia === ib;
+  return canonicalPath(a, fsx) === canonicalPath(b, fsx);
+}
+
+/** Git-tracked files under `dir`, relative to `root` (empty if not in a git work tree or no git).
+ * The pathspec is case-insensitive: git's own matching is case-sensitive even with
+ * core.ignorecase, and over-matching only makes the guard stricter. */
 export function gitTrackedFiles(root, dir) {
   if (!existsSync(dir)) return [];
   try {
-    const out = execFileSync("git", ["-C", root, "ls-files", "-z", "--", relative(root, dir)], {
+    const spec = `:(icase,literal)${relative(root, dir)}`;
+    const out = execFileSync("git", ["-C", root, "ls-files", "-z", "--", spec], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 64 * 1024 * 1024,
@@ -347,62 +411,68 @@ export function gitTrackedFiles(root, dir) {
  * loop makes `outDir` match each build exactly (and empties `staging` before each), so anything
  * else in them is deleted. Throws a user-facing Error that says why and what to pass instead.
  *
- * Compared on canonical paths, so `SRC` on a case-insensitive volume, or a symlink, can't slip
- * past. `workerDir` (the wrangler `main`'s directory) is protected unless it sits inside the
- * wrangler-configured assets directory, where the config itself declares the Worker to be build
- * output (Astro's adapter writes `dist/_worker.js`). */
-export function checkOutDir({ root, outDir, staging, configDir, workerDir, assetsDir }) {
+ * Directories are compared by identity (see `dirWithin`), so `SRC`, a symlink or a bind alias
+ * can't slip past. The rules:
+ * - outDir must be strictly inside the site root (not the root, nor anywhere outside it);
+ * - it must not be, be inside, or enclose src/, public/, node_modules/ or .git/;
+ * - it must not be, or enclose, the wrangler config's directory;
+ * - the wrangler `main`'s directory (`workerDir`): if it is the root or config dir or above them,
+ *   outDir must not be it or enclose it (already implied by the two rules above); if it lies inside
+ *   the wrangler-configured assets directory, the config itself declares the Worker to be build
+ *   output (Astro's adapter writes `dist/_worker.js`), so only an outDir equal to it or inside it is
+ *   refused; anywhere else it is source, like src/;
+ * - outDir and staging must not hold a package.json or any git-tracked file. */
+export function checkOutDir(
+  { root, outDir, staging, configDir, workerDir, assetsDir, given },
+  fsx = REAL_FS
+) {
   const fix =
     "Point --out-dir (or assets.directory in the wrangler config) at a directory only the build " +
     "writes, such as dist/.";
   const pruned = "it is emptied and refilled to match every build";
-  const rootC = canonicalPath(root);
-  const out = canonicalPath(outDir);
-  const show = (p) => (relative(rootC, p) || ".") + (p === rootC ? " (the site root)" : "/");
-  const refuse = (msg) => {
-    throw new Error(`refusing output dir ${outDir}: ${msg}. ${fix}`);
+  const rootC = canonicalPath(root, fsx);
+  const show = (p) => {
+    const c = canonicalPath(p, fsx);
+    return sameDir(c, rootC, fsx) ? ". (the site root)" : `${relative(rootC, c)}/`;
   };
+  const refuse = (msg) => {
+    const name = given && resolve(configDir, given) !== outDir ? `${given} (${outDir})` : outDir;
+    throw new Error(`refusing output dir ${name}: ${msg}. ${fix}`);
+  };
+  const within = (a, b) => dirWithin(a, b, fsx);
 
-  if (out === rootC || !isWithin(out, rootC)) {
+  if (sameDir(outDir, rootC, fsx) || !within(outDir, rootC)) {
     refuse(`it must be a subdirectory of the site root ${root}, because ${pruned}`);
   }
-  // Directories that hold source the build output must stay out of AND away from (no nesting
-  // either way), and containers it may live inside but must not be, or enclose.
-  const leaves = ["src", "public", "node_modules", ".git"].map((d) => canonicalPath(join(root, d)));
-  const configC = canonicalPath(configDir);
-  const containers = [configC];
+  const leaves = ["src", "public", "node_modules", ".git"].map((d) => join(rootC, d));
+  const containers = [configDir];
   if (workerDir) {
-    const w = canonicalPath(workerDir);
-    // A Worker entry next to the config (or at the root) makes that dir a container, not source.
-    if (isWithin(rootC, w) || isWithin(configC, w)) containers.push(w);
-    else if (assetsDir && isWithin(w, canonicalPath(assetsDir))) {
-      // The Worker is build output by the config's own say-so: only forbid out === w, or inside it.
-      if (isWithin(out, w)) leaves.push(w);
-    } else leaves.push(w);
+    if (within(rootC, workerDir) || within(configDir, workerDir)) containers.push(workerDir);
+    else if (assetsDir && within(workerDir, assetsDir)) {
+      if (within(outDir, workerDir)) leaves.push(workerDir);
+    } else leaves.push(workerDir);
   }
   for (const d of leaves) {
-    if (isWithin(out, d)) {
-      refuse(`it is ${out === d ? "" : "inside "}${show(d)}, which holds source, and ${pruned}`);
+    if (within(outDir, d)) {
+      const how = sameDir(outDir, d, fsx) ? "" : "inside ";
+      refuse(`it is ${how}${show(d)}, which holds source, and ${pruned}`);
     }
-    if (isWithin(d, out)) {
-      refuse(`it contains ${show(d)}, which holds source, and ${pruned}`);
-    }
+    if (within(d, outDir)) refuse(`it contains ${show(d)}, which holds source, and ${pruned}`);
   }
   for (const d of containers) {
-    if (isWithin(d, out)) {
-      refuse(
-        `it ${out === d ? "is" : "contains"} ${show(d)} (it holds the wrangler config or Worker), and ${pruned}`
-      );
+    if (within(d, outDir)) {
+      const how = sameDir(outDir, d, fsx) ? "is" : "contains";
+      refuse(`it ${how} ${show(d)} (it holds the wrangler config or Worker), and ${pruned}`);
     }
   }
   for (const dir of [outDir, staging]) {
-    const d = canonicalPath(dir);
-    if (existsSync(join(d, "package.json"))) {
+    const d = canonicalPath(dir, fsx);
+    if (fsx.exists(join(d, "package.json"))) {
       refuse(
         `${show(d)} has a package.json, so it looks like a package, not build output, and ${pruned}`
       );
     }
-    const tracked = gitTrackedFiles(rootC, d);
+    const tracked = fsx.tracked(rootC, d);
     if (tracked.length > 0) {
       const sample = tracked.slice(0, 3).join(", ") + (tracked.length > 3 ? ", …" : "");
       refuse(
@@ -422,22 +492,26 @@ Usage: cloudflare-md-router dev [options] [-- <extra wrangler dev args>]
 
   --build <cmd>        build command (default: the site's "build" script via its package manager).
                        Run through the shell with node_modules/.bin on PATH, so "astro build" works.
-  --out-dir <dir>      served output dir (default: assets.directory from the wrangler config, else dist).
-                       Emptied and refilled on every build, so source dirs, the site root, a dir with
-                       a package.json, and one holding git-tracked files are refused.
+  --out-dir <dir>      served output dir (default: assets.directory from the wrangler config, else dist);
+                       a relative path resolves against the wrangler config's directory. Emptied and
+                       refilled on every build, so the site root, anything outside it, source dirs
+                       (src, public, node_modules, .git, the Worker's), the config's dir, and a dir
+                       with a package.json or git-tracked files are refused.
   --out-dir-flag <f>   flag used to point the build at the staging dir (default: ${DEFAULT_OUT_DIR_FLAG};
                        use "" to disable). Ignored if --build contains {outDir}.
   --watch <path>       extra path to rebuild on, repeatable or comma-separated, added to the defaults
                        (src, public, astro/vite config, tsconfig.json, package.json, .env*).
                        Directories recurse; anything else is a root-level file name (a trailing *
-                       is a prefix match). The Worker dir is NOT watched: wrangler reloads it itself.
-                       The output and staging dirs, node_modules, .git and .wrangler never trigger.
+                       is a prefix match); nested file paths and missing dirs are skipped, with a
+                       warning. The Worker dir is NOT watched: wrangler reloads it itself. Never
+                       triggering: the output and staging dirs, node_modules, .git, .wrangler,
+                       framework caches (.astro, .svelte-kit, .next, …) and anything gitignored.
   --no-default-watch   watch only what --watch names
   --port <n>           first port to try (default: $PORT, else ${DEFAULT_PORT}); walks up to ${PORT_TRIES - 1} higher
   --config <file>      wrangler config (default: wrangler.jsonc, wrangler.json, wrangler.toml); must exist
   --root <dir>         site root (default: cwd)
   --strict             do not set MD_ROUTER_DEV=1 for the build (keep strict checks on)
-  --help
+  --help, -h
 
 Env: PORT, MD_ROUTER_DEV_BUILD, MD_ROUTER_DEV_STRICT=1. Flags win over env.
 The build sees MD_ROUTER_DEV=1 (unless strict) and MD_ROUTER_DEV_OUT_DIR=<staging dir>.`;
@@ -500,9 +574,12 @@ export function resolveOptions(flags, env, cwd) {
 
   const outDirRaw = flags.outDir ?? wrangler.assetsDirectory ?? DEFAULT_OUT_DIR;
   const configDir = wrangler.file ? dirname(wrangler.file) : root;
-  const outDir = resolve(configDir, outDirRaw);
+  // Canonical (on-disk case, symlinks resolved), so the watcher's ignore check — which compares
+  // against paths built from what the filesystem reports — matches whatever spelling was passed.
+  const outDir = canonicalPath(resolve(configDir, outDirRaw));
   const staging = join(dirname(outDir), `.dev-${basename(outDir)}`);
   checkOutDir({
+    given: outDirRaw,
     root,
     outDir,
     staging,
@@ -520,14 +597,14 @@ export function resolveOptions(flags, env, cwd) {
   const buildOverride = flags.build ?? (env.MD_ROUTER_DEV_BUILD || undefined);
 
   return {
-    root,
+    root: canonicalPath(root),
     port,
     pm,
     outDir,
     staging,
     wranglerConfig: wrangler.file,
-    workerMain: wrangler.main,
     watch,
+    userWatch: flags.watch,
     outDirFlag: flags.outDirFlag ?? DEFAULT_OUT_DIR_FLAG,
     buildOverride,
     strict: flags.strict === true || truthy(env.MD_ROUTER_DEV_STRICT),
@@ -553,10 +630,12 @@ export function buildInvocation(opts) {
 }
 
 /** Directories to watch recursively, and root-level file names (`*` suffix = prefix match) to
- * match in the root directory. A missing directory is skipped by the caller, not an error here. */
+ * match in the root directory. Entries that can't be watched land in `dropped` with the reason, so
+ * the caller can say so for the ones the user asked for (a default like `public` is just absent). */
 export function classifyWatch(root, entries) {
   const dirs = [];
   const names = [];
+  const dropped = [];
   for (const entry of entries) {
     const abs = isAbsolute(entry) ? entry : join(root, entry);
     let isDir = false;
@@ -564,13 +643,20 @@ export function classifyWatch(root, entries) {
       isDir = statSync(abs).isDirectory();
     } catch {}
     if (isDir) dirs.push(abs);
-    else if (entry.includes("/"))
-      continue; // nested files aren't supported; pass the directory
+    else if (entry.includes("/") || entry.includes(sep)) {
+      dropped.push({
+        entry,
+        why: existsSync(abs)
+          ? "only directories and root-level file names can be watched; watch its directory"
+          : "no such directory",
+      });
+    }
     // A plain name with no dot or `*` that isn't on disk is a directory that doesn't exist (yet),
     // e.g. a site with no `public/`. Skip it; `.env` and `*.config.*` style names are kept.
     else if (entry.includes("*") || entry.includes(".") || existsSync(abs)) names.push(entry);
+    else dropped.push({ entry, why: "no such directory" });
   }
-  return { dirs, names };
+  return { dirs, names, dropped };
 }
 
 /** Does a root-level file name match a watch name (exact, or prefix when it ends in `*`, which
