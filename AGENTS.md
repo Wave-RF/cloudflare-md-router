@@ -99,7 +99,7 @@ Agents follow the universal git hooks (pre-commit + pre-push in `.githooks/`). O
 
 Create PRs with `gh pr create --draft`. Only humans flip draft → ready (`gh pr ready` is blocked) and only humans approve / request changes (`gh pr review --approve`/`--request-changes` are blocked). Adding/removing human reviewers is humans-only.
 
-**PR title format** — the title becomes the squash-merge subject on `main` (which release-please parses), and is gated by the required `pr-title` check. Conventional Commits: `<type>(optional-scope)(optional-!): <subject>`, **≤ 72 chars**, subject lowercase-first, no trailing period. Types: `feat fix docs refactor test chore ci deps build perf revert style`. Validate before creating: `scripts/lint-pr-title.sh "<title>"`. The same script backs the local gate and the CI check, so they never drift.
+**PR title format** — the title becomes the squash-merge subject on `main` (which semantic-release parses to decide the release), and is gated by the required `pr-title` check. Conventional Commits: `<type>(optional-scope)(optional-!): <subject>`, **≤ 72 chars**, subject lowercase-first, no trailing period. Types: `feat fix docs refactor test chore ci deps build perf revert style`. Validate before creating: `scripts/lint-pr-title.sh "<title>"`. The same script backs the local gate and the CI check, so they never drift.
 
 ### Pre-push self-review is mandatory on PR branches
 
@@ -137,7 +137,7 @@ Every change to the public surface updates its docs in the same PR:
 | Change a routing invariant (pass-through rules, fallback, the `Link` header) | `README.md` (behavior table + the relevant note), the `src/` JSDoc |
 | Change the `LLM_BOT_UA` bot list | `src/bots.ts`, `README.md` (the enumerated bot list) |
 | Change the package name / `exports` / `engines` / peer deps / the `wrangler.jsonc` contract | `README.md` (Install + Use), `package.json` |
-| Any change | a Conventional-Commit message (release-please writes `CHANGELOG.md`) |
+| Any change | a Conventional-Commit PR title — it becomes the squash commit and decides the release (see `RELEASING.md`); release notes go to GitHub Releases |
 
 Before finishing, grep the identifiers you touched (option names, export names, bot names) across `README.md` and `src/` to catch staleness. Prose quality + code↔docs sync are gated by the `docs-reviewer`.
 
@@ -152,7 +152,7 @@ src/index.ts            → public re-export barrel (the API entry; ships)
 src/worker.ts           → the whole implementation: createMdRouter + mdRouter + the MdRouter* types (ships)
 src/bots.ts             → LLM_BOT_UA, the default crawler User-Agent regex (ships)
 tsconfig.json           → strict, ESNext, Bundler resolution, allowImportingTsExtensions (the typecheck gate)
-scripts/                → shell + node tooling (PR-title lint, reviewer manifest, markers, dev-version, repo setup)
+scripts/                → shell + node tooling (PR-title lint, reviewer manifest, markers, release-config check, repo setup)
 .githooks/              → universal pre-commit + pre-push (installed via pnpm run setup)
 .claude/                → settings, review subagents, /prepush + /release commands, gate/marker/format hooks
 .github/                → CI, pr-title, publish (semantic-release + OIDC), dependabot; prompts/ review rubrics
@@ -161,8 +161,8 @@ scripts/                → shell + node tooling (PR-title lint, reviewer manife
 
 ## CI / Automation
 
-- **`ci.yml`** — Biome `check` + `tsc --noEmit` on every PR/push (Node 24; pnpm 11 needs Node ≥ 22.13, so CI doesn't run on the package's `engines` floor — that floor documents the consumer toolchain).
+- **`ci.yml`** — Biome `check` + `tsc --noEmit` + the offline release-config check (`pnpm run check:release`) on every PR/push (Node 24; pnpm 11 needs Node ≥ 22.13, so CI doesn't run on the package's `engines` floor — that floor documents the consumer toolchain).
 - **`pr-title.yml`** — Conventional-Commit title check (required); skips the check for `dependabot[bot]`.
-- **`publish-npm.yml`** — release-please + OIDC publish to `latest`/prerelease, and the `@dev` content-addressed channel on every main push. ONE file (npm allows one trusted-publisher filename per package).
+- **`publish-npm.yml`** — release on merge: every push to `main` runs `verify`, then semantic-release, which tags `vX.Y.Z`, publishes to npm via OIDC with provenance, and creates the GitHub Release — or does nothing if no commit warrants a release. ONE file (npm allows one trusted-publisher filename per package).
 - **`dependabot.yml` + `dependabot-automerge.yml`** — weekly grouped dep/action bumps; patch/minor auto-merge after CI, major held for review.
 - Third-party actions are pinned to commit SHAs with version comments where verified (`dependabot/fetch-metadata` is on a major tag pending a SHA pin).
