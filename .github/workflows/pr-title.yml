@@ -2,7 +2,7 @@ name: PR title
 
 # Validates the PR title against Conventional Commits — the SAME rule the local
 # agent gate checks (scripts/lint-pr-title.sh is the single source of truth), and
-# the title becomes the squash-merge commit subject that release-please parses
+# the title becomes the squash-merge commit subject that semantic-release parses
 # for the version bump. Required check (see scripts/setup-repo.sh).
 #
 # pull_request_target runs in the BASE repo's context, so the trusted base copy

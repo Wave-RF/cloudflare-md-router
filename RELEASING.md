@@ -1,82 +1,121 @@
 # Releasing & maintenance
 
-How `@wave-rf/cloudflare-md-router` is published, and the **one-time bootstrap** to enable it.
+How `@wave-rf/cloudflare-md-router` is published. **Releases happen on merge to `main`**, driven by [semantic-release](https://semantic-release.org); there is no release PR and nothing to click.
 
 ## The model
 
-- **Versioning is automated** by [release-please](https://github.com/googleapis/release-please) from Conventional-Commit messages. You don't bump versions or create tags by hand.
-- **Auth is OIDC trusted publishing** — no `NPM_TOKEN` secret in the repo. Publishes are short-lived-token + provenance-attested, from `.github/workflows/publish-npm.yml`.
-- **Two npm channels:** `latest` (+ `alpha`/`beta`/`rc`/`next` for prereleases) from tagged releases, and `dev` (a content-addressed `0.0.0-dev.<hash>` on every push to `main`).
-- During **0.x**: breaking (`feat!`/`BREAKING CHANGE`) → **minor**, `feat`/`fix` → **patch** (`release-please-config.json`), so `^0.x` consumers auto-get features+fixes and are shielded from breaking changes.
-- **No build step.** The package ships raw TypeScript (`src/`); `npm publish` packs the `files` allowlist directly. Consumers bundle the `.ts` with Wrangler/esbuild.
+- **Every squash-merge to `main` either releases or doesn't, decided by its Conventional-Commit title.** Squash merges use the PR title as the commit subject, and the required `pr-title` check validates it, so the title is the release decision.
+- **The git tag is the version.** `vX.Y.Z` tags are created by the release run; `package.json` `version` stays at the placeholder `0.0.0-development` and semantic-release sets the real version in the CI workspace only. Nothing is committed back to `main` (it is protected), so there is no changelog commit.
+- **GitHub Releases replace `CHANGELOG.md`.** Notes are generated per release. `CHANGELOG.md` is frozen history up to 0.2.1.
+- **Auth is OIDC trusted publishing**, no `NPM_TOKEN`. Publishes carry provenance. The GitHub side (tag, Release, comments) uses the built-in `GITHUB_TOKEN`.
+- **One channel.** `main` is always the latest release. There is no `@dev` channel any more.
+- **No build step.** The package ships raw TypeScript (`src/`); npm packs the `files` allowlist directly.
 
-## One-time bootstrap (do once, in order)
+### What releases what
 
-> **Why the first publish is manual:** npm OIDC trusted publishing can't *create* a package that doesn't exist yet — the trusted-publisher config attaches to an existing package. So the very first publish is a manual `npm publish`; CI/OIDC takes over from the next release.
+| PR / commit title | Release |
+| ----------------- | ------- |
+| `fix:` `perf:` `revert:` | patch (0.2.1 -> 0.2.2) |
+| `feat:` | minor (0.2.1 -> 0.3.0) |
+| `feat!:` / any type with `!`, or a `BREAKING CHANGE:` footer | **major** (0.2.1 -> 1.0.0) |
+| `deps:` `ci:` `chore:` `docs:` `test:` `refactor:` `build:` `style:` | none |
 
-**1. npm org.** Make sure the **`@wave-rf`** org exists on npmjs.com and your account can publish to it. (This package was previously distributed via `github:Wave-RF/cloudflare-md-router`; npm is the new home, and the package is being renamed from the unscoped `cloudflare-md-router` to the scoped `@wave-rf/cloudflare-md-router`.)
+- There is no 0.x shielding (release-please's "breaking -> minor while 0.x" is gone): the first breaking change releases `1.0.0`. Mark a break deliberately.
+- A breaking marker wins over a "no release" type, so `refactor!:` releases a major.
+- The workflow runs `pnpm run verify` before `semantic-release`, so a red `main` never releases.
+- Commit bodies are not consulted except for `BREAKING CHANGE:`. Only the squash subject matters.
 
-**2. First manual publish** (creates the package). From a checkout of this branch (or `main` after merge), logged in as a `@wave-rf` member:
+### Shipping a dependency bump
+
+Dependabot titles are `deps:` (npm) and `ci:` (actions), which do not release. A **runtime** dependency bump that consumers should receive is the exception: before merging, retitle the PR `fix(deps): bump <pkg> to <version>` (the `pr-title` check accepts it). For this package that is rare; `devDependencies` bumps should stay `deps:`.
+
+To force a release with no other change, merge any `fix:` PR. There is no `Release-As:` footer.
+
+### Pre-release channels
+
+None configured. `branches` is `["main"]` only. To add a `next`/`beta` channel later, add the branch to `.releaserc.json` and mind that it needs its own protection rules.
+
+## What a release run does
+
+`publish-npm.yml` (push to `main`, serialised by a `publish-npm` concurrency group, never cancelled):
+
+1. checkout with full history and tags, pnpm install, `pnpm run verify`;
+2. `semantic-release` finds the latest `vX.Y.Z` tag reachable from `main`, analyses the commits since it, and exits quietly if none are releasable;
+3. otherwise it pushes the new tag, runs `npm publish` via OIDC with provenance (`@semantic-release/npm`), creates the GitHub Release with generated notes, and comments "released in vX.Y.Z" on the issues and PRs involved (`@semantic-release/github`).
+
+Node is 24 with **no `registry-url`** on `setup-node` (it writes an `.npmrc` that breaks the OIDC exchange). semantic-release and the conventional-commits preset are pinned to exact versions in `devDependencies`, so a release never fetches an unpinned latest. The preset must stay on a major compatible with the `conventional-changelog-writer` that semantic-release's release-notes plugin bundles; as of semantic-release 25 that is preset 9.x (preset 10.x fails with "requires conventional-changelog-writer@9"). Bump them together, and check with a dry run (below).
+
+### Failures and re-runs
+
+- A failed release opens a **"The automated release is failing"** issue (from `@semantic-release/github`) with the error. That is the "release broke" signal. It closes itself on the next success.
+- **Failure before the tag is pushed** (verify red, OIDC misconfigured at verify time): fix and re-run the failed workflow run. Nothing was released.
+- **Failure after the tag is pushed** (e.g. `npm publish` 403/network): the tag `vX.Y.Z` already exists, so a re-run sees "no release". Delete the tag so semantic-release re-derives it, then re-run:
+
+  ```sh
+  git push --delete origin vX.Y.Z      # only if the version is NOT on npm
+  gh run rerun <run-id>
+  ```
+
+  Check `npm view @wave-rf/cloudflare-md-router versions` first; never delete a tag whose version is already published.
+- The workflow triggers on `push` to `main` only; re-run with `gh run rerun <run-id>` or the Actions UI "Re-run jobs". Add `workflow_dispatch:` later if manual dispatch is wanted.
+- **Roll back a bad release:** `npm deprecate "@wave-rf/cloudflare-md-router@X.Y.Z" "<why>"` and ship a `fix:`. Unpublishing is restricted by npm; prefer deprecate.
+
+### Checking what the next merge would do (dry run, no writes)
 
 ```sh
-npm login
-npm pack --dry-run        # sanity: should list ONLY the src/ files (src/index.ts, src/worker.ts, src/bots.ts), README.md, LICENSE, package.json
-npm publish --access public
+pnpm install
+# From a clone whose `main` exists on its remote. Restricting plugins means
+# nothing can publish; --dry-run also skips tag creation.
+pnpm exec semantic-release --dry-run --no-ci \
+  --plugins @semantic-release/commit-analyzer @semantic-release/release-notes-generator
 ```
 
-`publishConfig.access` is already `public` in `package.json`, so `--access public` is belt-and-suspenders. This publishes `0.2.0` to the `latest` tag.
+Note the CLI `--plugins` override drops the plugin options in `.releaserc.json` (so it falls back to the default preset and rules); for an exact replay of the real rules, run the programmatic API with the config's two analysis plugins only. `/release` in Claude Code summarises the same thing from the commit list.
 
-> This manual `0.2.0` won't carry a provenance attestation (provenance can only be generated from CI/OIDC — a laptop publish errors with "provider: null" if you force it). That's expected and fine for the one-time bootstrap; every CI publish from the next release on (and the `@dev` builds) is provenance-attested via the `--provenance` flag in `publish-npm.yml`.
+## One-time bootstrap (npm side)
 
-**3. Configure the trusted publisher.** On npmjs.com → the package → **Settings → Trusted Publisher** → add a **GitHub Actions** publisher with **exactly**:
+> **Why the first publish is manual:** npm OIDC trusted publishing can't *create* a package that doesn't exist yet; the trusted-publisher config attaches to an existing package. This package is already on npm (0.2.0, 0.2.1), so this section is history for this repo and a checklist for sibling repos.
 
-| Field | Value |
-| ----- | ----- |
-| Organization / owner | `Wave-RF` |
-| Repository | `cloudflare-md-router` |
-| Workflow filename | `publish-npm.yml` |
-| Environment | *(leave blank — the jobs declare no `environment:`)* |
+1. **npm org.** The **`@wave-rf`** org must exist and your account must be able to publish to it.
+2. **First manual publish** (creates the package), from a clean checkout, logged in as a `@wave-rf` member:
 
-The workflow filename is matched literally — if you ever rename `publish-npm.yml`, update this or publishing breaks. (Optional hardening: once OIDC works, enable "Require 2FA and disallow tokens" so CI is the only publish path.)
+   ```sh
+   npm login
+   npm pack --dry-run        # should list only src/, README.md, LICENSE, package.json
+   npm publish --access public
+   ```
 
-**4. No extra token needed.** release-please uses the built-in `GITHUB_TOKEN`. One consequence: a PR opened by `GITHUB_TOKEN` **doesn't trigger CI**, so the **release PR's** `ci`/`pr-title` checks won't run on their own. Because `scripts/setup-repo.sh` leaves `enforce_admins` **off**, you merge the release PR with the admin **"Merge without waiting for requirements to be met"** button — one extra click per release. (Human and Dependabot PRs run CI normally; only the bot-opened release PR needs the override.) *Optional upgrade later:* a fine-grained PAT in the secret `RELEASE_PLEASE_TOKEN` (Contents + Pull requests: write) would let the release PR run CI automatically — but it's not required.
+   A laptop publish carries no provenance attestation (that needs CI/OIDC); expected for the bootstrap. Because `package.json` `version` is now the placeholder `0.0.0-development`, a *new* package would need a real version set by hand for this one publish (and a matching `vX.Y.Z` tag pushed so semantic-release continues from it).
+3. **Configure the trusted publisher.** npmjs.com -> the package -> **Settings -> Trusted Publisher** -> **GitHub Actions**, with exactly:
 
-**5. Branch protection + merge settings.** After this PR is merged **and CI has run once on `main`** (so the check names `ci` and `pr-title` exist), run:
+   | Field | Value |
+   | ----- | ----- |
+   | Organization / owner | `Wave-RF` |
+   | Repository | `cloudflare-md-router` |
+   | Workflow filename | `publish-npm.yml` |
+   | Environment | *(blank; the job declares no `environment:`)* |
 
-```sh
-bash scripts/setup-repo.sh
-```
+   The filename is matched literally; renaming `publish-npm.yml` breaks publishing. Optional hardening: enable "Require 2FA and disallow tokens" so CI is the only publish path.
+4. **No secrets.** Neither `NPM_TOKEN` nor a PAT is needed. `GITHUB_TOKEN` creates the tag and Release (the workflow grants `contents`, `issues`, `pull-requests` write and `id-token: write`). Tag pushes made with `GITHUB_TOKEN` do not trigger other workflows; nothing here depends on that.
+5. **Branch protection + merge settings.** Run once CI has run on `main` (so the `ci` and `pr-title` check names exist):
 
-This sets squash-only merges (PR title as the commit subject), auto-merge + auto-delete, and protects `main`: PR required (0 approvals — solo-friendly), required checks `ci` + `pr-title`, **no force-push, no deletion**, dismiss-stale-reviews, conversation resolution. `enforce_admins` is left **off** so you keep a bootstrap escape hatch — flip it on later with:
+   ```sh
+   bash scripts/setup-repo.sh
+   ```
 
-```sh
-gh api -X PUT repos/Wave-RF/cloudflare-md-router/branches/main/protection/enforce_admins
-```
-
-## Cutting a release (ongoing — the normal path)
-
-1. Land Conventional-Commit PRs on `main` (squash-merge).
-2. release-please keeps an open **release PR** (`chore(main): release X.Y.Z`) with the version bump + `CHANGELOG.md`. Inspect it any time with **`/release`** or `gh pr list --label "autorelease: pending"`.
-3. **Merge the release PR.** That tags `vX.Y.Z`, creates the GitHub Release, and the same workflow run publishes to npm with provenance.
-
-Every push to `main` also publishes a `0.0.0-dev.<hash>` to the `dev` tag for bleeding-edge consumers (`pnpm add @wave-rf/cloudflare-md-router@dev`). It never moves `latest`.
-
-### Prereleases & forcing a version
-
-- A version like `0.3.0-rc.1` publishes under the matching dist-tag (`rc`) and is marked a GitHub pre-release; `^0.2.0` consumers never receive it.
-- To force a specific version (e.g. graduate to `1.0.0`): land a commit whose **body** contains `Release-As: 1.0.0`.
+   Squash-only merges (PR title = commit subject: this is what semantic-release reads), auto-merge, auto-delete, protected `main` (PR required, `ci` + `pr-title` required, no force-push or deletion). `main` stays protected, which is why the release never commits to it.
 
 ## Verifying a release
 
 ```sh
-npm dist-tag ls @wave-rf/cloudflare-md-router      # latest + dev pointers
+npm dist-tag ls @wave-rf/cloudflare-md-router      # latest -> the new version
 npm view @wave-rf/cloudflare-md-router@<version>   # provenance shows on the npm page
 gh release view v<version>
 ```
 
 ## Troubleshooting
 
-- **`publish-release` never ran after merging the release PR** — check the `release-please` job's `releases_created` output; if release-please used `GITHUB_TOKEN` (no PAT) the release may not have been created cleanly. Confirm the tag/Release exist.
-- **OIDC publish failed (`401`/`403`)** — the trusted-publisher config doesn't match: verify org/repo and that the **workflow filename** is exactly `publish-npm.yml`. The job must have `permissions: id-token: write` (it does).
-- **`publish-dev` skipped with "not on npm yet"** — the one-time manual publish (step 2) hasn't happened; do it, then the next `main` push publishes `@dev`.
-- **Release PR sits with no checks / can't merge** — expected without a PAT (step 4): the bot-opened PR doesn't trigger CI. Merge it with the admin "Merge without waiting for requirements to be met" button (`enforce_admins` is off). Or add the optional `RELEASE_PLEASE_TOKEN` PAT to make CI run on it.
+- **A merge didn't release.** Expected if its title was `deps`/`ci`/`chore`/`docs`/`test`/`refactor`/`build`/`style`. Check the run log: "no relevant changes, so no new version is released". Retitle future PRs, or merge a `fix:`.
+- **OIDC publish failed (`401`/`403`/`ENEEDAUTH`).** The trusted-publisher config doesn't match (org, repo, workflow filename `publish-npm.yml`), or `setup-node` was given `registry-url` again, or the runner's npm is older than 11.5.1.
+- **"No release" right after a failed publish.** The tag already exists; see *Failure after the tag is pushed* above.
+- **Release notes show the wrong range.** semantic-release uses the latest tag reachable from `main`. Don't hand-create tags.
