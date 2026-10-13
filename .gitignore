@@ -1,8 +1,4 @@
 node_modules/
-# Library — consumers resolve via their own lockfile; ours isn't committed (it
-# only pins our devDeps). pnpm *config* lives in pnpm-workspace.yaml, which IS
-# committed.
-pnpm-lock.yaml
 dist/
 *.log
 .DS_Store

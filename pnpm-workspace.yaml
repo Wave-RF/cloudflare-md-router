@@ -7,3 +7,13 @@
 # `pnpm run typecheck`. Keeping autoInstallPeers off keeps the install lean and
 # avoids pnpm running build scripts it wasn't asked to (ERR_PNPM_IGNORED_BUILDS).
 autoInstallPeers: false
+
+# Supply-chain defense: a newly published dependency version can't be installed
+# for 7 days (10080 minutes), so a compromised release is usually caught and
+# pulled before it reaches CI or a publish. Our own scopes are exempt, so a
+# fresh @wave-rf / @wavehouse release is usable immediately. Same policy as
+# Wave-RF/WaveHouse.
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - "@wave-rf/*"
+  - "@wavehouse/*"

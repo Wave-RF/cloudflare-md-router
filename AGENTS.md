@@ -38,7 +38,7 @@ What must stay true. Preserve the named invariant when you touch its code. The W
 ## Build & Test Commands
 
 ```bash
-pnpm install            # resolve deps (no committed lockfile — it's a library)
+pnpm install            # install from the committed pnpm-lock.yaml (CI uses --frozen-lockfile)
 pnpm run setup          # one-time: install git hooks (git config core.hooksPath .githooks)
 pnpm run typecheck      # tsc --noEmit (strict)
 pnpm run check          # biome check . (lint + format check) — the CI gate
@@ -47,6 +47,8 @@ pnpm run lint           # biome lint .
 pnpm run test           # node --test (the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test that asserts no child outlives the CLI)
 pnpm run verify         # biome check . && pnpm run typecheck && pnpm run test && pnpm run check:release, then write the tree marker
 ```
+
+**Dependencies are locked and aged.** `pnpm-lock.yaml` is committed; CI and the release build use `pnpm install --frozen-lockfile`, so they get exactly the tree that was tested (the lockfile doesn't reach consumers, who resolve with their own). `pnpm-workspace.yaml` sets `minimumReleaseAge: 10080` (7 days, `@wave-rf/*` and `@wavehouse/*` exempt) and Dependabot has a matching 7-day `cooldown`. Third-party GitHub Actions are pinned by commit SHA with a `# vX.Y.Z` comment.
 
 The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `tsc --noEmit` + those. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.
 

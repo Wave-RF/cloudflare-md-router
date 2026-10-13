@@ -40,9 +40,10 @@ jobs:
           # floor; engines.node documents the consumer floor instead.
           node-version: "24"
 
-      # No committed lockfile (this is a library — see .gitignore), so a frozen
-      # install would fail; resolve fresh. The dep set is tiny.
-      - run: pnpm install --no-frozen-lockfile
+      # Install exactly the committed pnpm-lock.yaml, so CI tests the dependency
+      # tree that gets reviewed and released. (The lockfile doesn't reach
+      # consumers; they resolve with their own.)
+      - run: pnpm install --frozen-lockfile
 
       - name: Lint + format check (Biome)
         run: pnpm run check
