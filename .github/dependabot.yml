@@ -9,6 +9,10 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # Don't propose a version pnpm's minimumReleaseAge (pnpm-workspace.yaml) would
+    # refuse to install for 7 days.
+    cooldown:
+      default-days: 7
     groups:
       # semantic-release and the plugins that read the conventional-commits
       # preset move together: the preset and the notes generator are coupled
@@ -39,6 +43,10 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # Don't propose a version pnpm's minimumReleaseAge (pnpm-workspace.yaml) would
+    # refuse to install for 7 days.
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]

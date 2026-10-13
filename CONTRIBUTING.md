@@ -5,9 +5,11 @@ Thanks for contributing to `@wave-rf/cloudflare-md-router`.
 ## Setup
 
 ```sh
-pnpm install      # resolve deps (there's no committed lockfile — it's a library)
+pnpm install      # install from the committed pnpm-lock.yaml
 pnpm run setup    # one-time: install the git hooks (pre-commit + pre-push)
 ```
+
+`pnpm-lock.yaml` is committed, and CI and the release install with `--frozen-lockfile`, so they build exactly the dependency tree that was tested. The lockfile doesn't affect consumers, who resolve with their own. A dependency PR that changes `package.json` must update the lockfile too. `pnpm-workspace.yaml` sets `minimumReleaseAge` (7 days): a freshly published version can't be installed until it has aged, except `@wave-rf/*` and `@wavehouse/*`.
 
 The package is pure ESM and ships **raw TypeScript** with no build step — `src/index.ts`, `src/worker.ts`, and `src/bots.ts` are what publish (consumers bundle the `.ts` with Wrangler/esbuild), plus the Node-only `bin/` dev CLI (`cloudflare-md-router dev`), which `src/` never imports. The Worker code runs on the Cloudflare Workers runtime, not Node; `engines.node` (`>=18`) documents the consumer toolchain floor.
 

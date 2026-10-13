@@ -7,7 +7,7 @@
 # Seed node_modules/ from main (per .worktreeinclude) so the install below is a
 # fast no-op when deps are unchanged, then install hooks for this worktree.
 copy-caches = "wt step copy-ignored"
-deps        = "pnpm install --no-frozen-lockfile"
+deps        = "pnpm install"
 hooks       = "pnpm run setup"
 
 [pre-merge]
