@@ -15,6 +15,9 @@ name: Publish (npm)
 on:
   push:
     branches: [main]
+  # Manual re-run. A push made with GITHUB_TOKEN (Dependabot auto-merge) starts no
+  # workflow, so a release-worthy commit can be left unreleased; see RELEASING.md.
+  workflow_dispatch:
 
 # Releases are strictly serial and an in-flight publish is never cancelled.
 concurrency:
