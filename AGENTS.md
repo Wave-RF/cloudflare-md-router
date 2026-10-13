@@ -6,7 +6,7 @@ Context for AI coding agents (Claude Code, Copilot, Cursor, etc.) working on thi
 
 The non-negotiables, ordered by how often agents miss them. These override convenience: if a rule blocks you, satisfy it; don't work around it.
 
-1. **Validate locally before every push** — `pnpm run verify` (Biome + `tsc --noEmit`). Don't use CI as your first feedback loop ([§Local-First Validation](#local-first-validation)).
+1. **Validate locally before every push** — `pnpm run verify` (Biome + `tsc --noEmit` + `node --test` + the offline release-config check). Don't use CI as your first feedback loop ([§Local-First Validation](#local-first-validation)).
 2. **A PR-branch push needs every pre-push reviewer satisfied** — run **`/prepush`**: it reads `scripts/pre-push-reviewers.sh`, runs the reviewers the change needs in parallel (fresh context), skips the rest *on the record*, and loops until each it ran returns `ship_it` ([§Agent PR Discipline](#agent-pr-discipline)).
 3. **Every public-surface change updates its docs in the same PR** — a changed `MdRouterOptions` option / export / default / the `LLM_BOT_UA` bot list / the `wrangler.jsonc` contract must update the **`src/` JSDoc** **and** `README.md` ([§Documentation Sync](#documentation-sync)). Release notes are **generated into GitHub Releases** (`CHANGELOG.md` is frozen history) — don't hand-edit it; just use the right Conventional-Commit type, because it decides whether the merge releases ([§Release Process](#release-process)).
 4. **Address and resolve every review finding** — fix it or track it in an issue; never silently drop one ([§Review Response](#review-response)).
@@ -18,13 +18,13 @@ The non-negotiables, ordered by how often agents miss them. These override conve
 
 A tiny, **pure-ESM** Cloudflare Worker for **request-time content negotiation** on a static site. When a request looks like an LLM fetcher — a known crawler `User-Agent` (`LLM_BOT_UA`) or an explicit `Accept: text/markdown` — it serves the page's **`.md` twin** (e.g. `/foo/bar/` → `/foo/bar.md`) from the `ASSETS` static-assets binding, falling back to the original HTML response if the twin 404s. For "normal" requests it returns the HTML page and, by default, annotates it with an RFC 8288 `Link` header advertising the `.md` twin so an agent can discover it from a plain GET.
 
-There is **no build step**: the package ships **raw TypeScript** — `src/index.ts` (the public re-export barrel), `src/worker.ts` (the whole implementation), and `src/bots.ts` (the crawler regex). Consumers bundle the `.ts` with Wrangler/esbuild (`exports` point straight at the `.ts` files; `tsconfig` uses `allowImportingTsExtensions` + `verbatimModuleSyntax`). The code runs on the **Workers runtime**, not Node — no Node built-ins.
+There is **no build step**: the package ships **raw TypeScript** — `src/index.ts` (the public re-export barrel), `src/worker.ts` (the whole implementation), and `src/bots.ts` (the crawler regex). Consumers bundle the `.ts` with Wrangler/esbuild (`exports` point straight at the `.ts` files; `tsconfig` uses `allowImportingTsExtensions` + `verbatimModuleSyntax`). The Worker code runs on the **Workers runtime**, not Node — no Node built-ins. The one exception is the Node-only `bin/` dev CLI (`cloudflare-md-router dev`), which ships too but is never imported by `src/` (invariant 8).
 
 `createMdRouter(options)` returns a Workers `ExportedHandler`; `mdRouter` (and the default export) is the zero-config instance. `LLM_BOT_UA` is the default crawler regex, exported so consumers can compose their own.
 
 ## Key Invariants
 
-What must stay true. Preserve the named invariant when you touch its code. The repo has **no automated test suite** yet (CI is `biome check` + `tsc --noEmit`), so these invariants are guarded by review, not by tests — if you add non-trivial routing logic, adding a test (a stub `ASSETS` Fetcher) is encouraged.
+What must stay true. Preserve the named invariant when you touch its code. The Worker's routing has **no automated tests** yet (only the `bin/` dev CLI is tested), so these invariants are guarded by review, not by tests — if you add non-trivial routing logic, adding a test (a stub `ASSETS` Fetcher) is encouraged.
 
 1. **Pass-through is verbatim.** Non-GET requests, any pathname matching the file-extension guard (`/\.[a-zA-Z0-9]+$/`), and "normal" requests that don't want markdown are forwarded to `env.ASSETS.fetch(request)` unchanged. The worker must never alter a pass-through **body**, and apart from the opt-in `Link` header it must not alter status or other headers.
 2. **Markdown-routing trigger** = `acceptTokens.some(tok => accept.includes(tok)) || botUserAgents.test(ua)`, where `acceptTokens` **always** contains `"text/markdown"` (consumer tokens via `acceptMarkdown` are *added*, never replace it) and `botUserAgents` defaults to the **case-insensitive** `LLM_BOT_UA`. Don't drop the always-on `text/markdown`, make the UA match case-sensitive, or over-match.
@@ -33,7 +33,7 @@ What must stay true. Preserve the named invariant when you touch its code. The r
 5. **`mdPathFor` default contract** — strip a trailing slash and append `.md`; the special case `/` → `/index.md`. A custom `mdPathFor` is consumer-supplied; the result is resolved against the request origin.
 6. **The `ASSETS` Fetcher binding + `run_worker_first`** — the worker needs an `ASSETS` binding (`MdRouterEnv.ASSETS: Fetcher`) and, in the consumer's `wrangler.jsonc`, `run_worker_first: true` so the worker sees the request before Cloudflare's static-asset matcher (otherwise it only runs on 404s). This is a documented contract — preserve it in code and docs.
 7. **Bounded fetches** — at most the two `ASSETS.fetch` calls the current flow makes (the twin, then the HTML fallback). No recursive or unbounded fetching. The UA regex runs on attacker-controlled input, so keep it **linear** (no catastrophic backtracking / ReDoS).
-8. **ESM + raw-TS shipping, Workers runtime** — `type: module`; ships `.ts` with `.ts` import specifiers; no CommonJS, no build step, no Node-only APIs. `engines.node` (`>=18`) documents the consumer-tooling floor, not the runtime.
+8. **ESM + raw-TS shipping, Workers runtime** — `type: module`; ships `.ts` with `.ts` import specifiers; no CommonJS, no build step, no Node-only APIs. `engines.node` (`>=18`) documents the consumer-tooling floor, not the runtime. The one exception is the `bin/` dev CLI, which needs Node 20+ (recursive `fs.watch` on Linux); the README says so, and `engines` stays at 18 so Worker-only consumers aren't excluded.
 
 ## Build & Test Commands
 
@@ -44,14 +44,15 @@ pnpm run typecheck      # tsc --noEmit (strict)
 pnpm run check          # biome check . (lint + format check) — the CI gate
 pnpm run format         # biome format --write . (auto-fix formatting)
 pnpm run lint           # biome lint .
-pnpm run verify         # biome check . && pnpm run typecheck, then write the tree marker
+pnpm run test           # node --test (the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test that asserts no child outlives the CLI)
+pnpm run verify         # biome check . && pnpm run typecheck && pnpm run test && pnpm run check:release, then write the tree marker
 ```
 
-There is **no test runner** — CI is Biome + `tsc --noEmit`. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.
+The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `tsc --noEmit` + those. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.
 
 ## Local-First Validation
 
-**Validate locally before pushing.** `pnpm run verify` runs the same gates as CI (Biome + `tsc --noEmit`). On success it writes the tree-keyed marker `tmp/verify-passed-tree-<TREE>` (`tmp/` is gitignored).
+**Validate locally before pushing.** `pnpm run verify` runs the same gates as CI (Biome + `tsc --noEmit` + `node --test` + the offline release-config check). On success it writes the tree-keyed marker `tmp/verify-passed-tree-<TREE>` (`tmp/` is gitignored).
 
 Enforced via git hooks (installed by `pnpm run setup`; apply to humans and agents alike):
 
@@ -137,6 +138,7 @@ Every change to the public surface updates its docs in the same PR:
 | Change a routing invariant (pass-through rules, fallback, the `Link` header) | `README.md` (behavior table + the relevant note), the `src/` JSDoc |
 | Change the `LLM_BOT_UA` bot list | `src/bots.ts`, `README.md` (the enumerated bot list) |
 | Change the package name / `exports` / `engines` / peer deps / the `wrangler.jsonc` contract | `README.md` (Install + Use), `package.json` |
+| Add/modify a `cloudflare-md-router dev` option, env var, or default | `bin/lib.mjs` (`HELP` + code), `README.md` (Dev loop table) |
 | Any change | a Conventional-Commit PR title — it becomes the squash commit and decides the release (see `RELEASING.md`); release notes go to GitHub Releases |
 
 Before finishing, grep the identifiers you touched (option names, export names, bot names) across `README.md` and `src/` to catch staleness. Prose quality + code↔docs sync are gated by the `docs-reviewer`.
@@ -151,6 +153,8 @@ This repo is set up for [Worktrunk](https://github.com/) (`wt`, config in `.conf
 src/index.ts            → public re-export barrel (the API entry; ships)
 src/worker.ts           → the whole implementation: createMdRouter + mdRouter + the MdRouter* types (ships)
 src/bots.ts             → LLM_BOT_UA, the default crawler User-Agent regex (ships)
+bin/cli.mjs, dev.mjs, lib.mjs → the `cloudflare-md-router dev` CLI (ships; plain Node ESM, Node built-ins only; Node, NOT Workers — `src/` must never import `bin/`)
+test/                   → node --test suite for bin/ (pure helpers + fixture-site smoke test, run under npm and pnpm; no network)
 tsconfig.json           → strict, ESNext, Bundler resolution, allowImportingTsExtensions (the typecheck gate)
 scripts/                → shell + node tooling (PR-title lint, reviewer manifest, markers, release-config check, repo setup)
 .githooks/              → universal pre-commit + pre-push (installed via pnpm run setup)
@@ -161,7 +165,7 @@ scripts/                → shell + node tooling (PR-title lint, reviewer manife
 
 ## CI / Automation
 
-- **`ci.yml`** — Biome `check` + `tsc --noEmit` + the offline release-config check (`pnpm run check:release`) on every PR/push (Node 24; pnpm 11 needs Node ≥ 22.13, so CI doesn't run on the package's `engines` floor — that floor documents the consumer toolchain).
+- **`ci.yml`** — Biome `check` + `tsc --noEmit` + `node --test` + the offline release-config check (`pnpm run check:release`) on every PR/push (Node 24; pnpm 11 needs Node ≥ 22.13, so CI doesn't run on the package's `engines` floor — that floor documents the consumer toolchain).
 - **`pr-title.yml`** — Conventional-Commit title check (required); skips the check for `dependabot[bot]`.
 - **`publish-npm.yml`** — release on merge: every push to `main` runs `verify`, then semantic-release, which tags `vX.Y.Z`, publishes to npm via OIDC with provenance, and creates the GitHub Release — or does nothing if no commit warrants a release. ONE file (npm allows one trusted-publisher filename per package).
 - **`dependabot.yml` + `dependabot-automerge.yml`** — weekly grouped dep/action bumps; patch/minor auto-merge after CI, major held for review.
