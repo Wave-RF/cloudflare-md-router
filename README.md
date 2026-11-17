@@ -26,7 +26,13 @@ This is on by default (only for a `200 text/html` reply to an extension-less GET
 
 Because the worker negotiates on the `Accept` header, two clients can get different representations of the same URL. If you put a shared cache (a CDN, Cloudflare's own cache) in front of it, set `vary: true` to add a `Vary: Accept` header to the negotiated responses so the cache keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. It's off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
 
-The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-Web, anthropic-ai, PerplexityBot, CCBot, Applebot-Extended, Google-Extended, cohere-ai, Bytespider, Diffbot. See `src/bots.ts`.
+The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-Web, Claude-User, Claude-SearchBot, Amazonbot, DuckAssistBot, anthropic-ai, PerplexityBot, CCBot, Applebot-Extended, Google-Extended, cohere-ai, Bytespider, Diffbot. See `src/bots.ts`.
+
+Three more opt-in features, all off by default:
+
+- `checkTwin: true` fetches the `.md` twin from `ASSETS` before advertising it, so a route with no twin (an error page, say) gets no dead `Link`. It costs one extra local asset lookup per HTML page.
+- `advertiseLlmsTxt: true` (or a path) adds `Link: </llms.txt>; rel="alternate"; type="text/plain"` to HTML pages.
+- `canonicalOrigin: "https://example.com"` rewrites absolute `og:image` / `twitter:image` URLs under that origin to the origin being browsed when the request host differs (a preview deploy), via `HTMLRewriter`. `canonical` and `og:url` are left alone.
 
 ## Install
 
@@ -88,7 +94,25 @@ export default createMdRouter({
   // Add `Vary: Accept` to negotiated responses so a shared cache doesn't
   // cross-serve the HTML and markdown representations (default: false).
   vary: true,
+
+  // Only advertise a twin that exists (default: false).
+  checkTwin: true,
+
+  // Also advertise /llms.txt via a Link header (default: false).
+  advertiseLlmsTxt: true,
+
+  // Point og:image / twitter:image at the browsed origin on preview hosts.
+  canonicalOrigin: "https://example.com",
 });
+```
+
+To run the negotiation inside a larger Worker, use `createMdResponder(options)`, which returns a plain `(request, env) => Promise<Response>`:
+
+```ts
+const respond = createMdResponder({ vary: true });
+export default {
+  fetch: (request, env) => (isApi(request) ? api(request, env) : respond(request, env)),
+};
 ```
 
 ## Dev loop (`cloudflare-md-router dev`)
