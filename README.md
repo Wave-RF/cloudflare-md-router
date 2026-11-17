@@ -12,8 +12,8 @@ If you're building a docs site that already emits a per-page raw-markdown twin (
 | ---------------------------------------------- | ------------------- |
 | Anything with a file extension (`.css`, `.png`, `.md`, …) | Pass-through to ASSETS |
 | Non-GET                                        | Pass-through to ASSETS |
-| `Accept: text/markdown`                        | `<path>.md` (HTML fallback on 404) |
-| `User-Agent` matches a known LLM bot           | `<path>.md` (HTML fallback on 404) |
+| `Accept: text/markdown`                        | `<path>.md` (HTML fallback when the twin is not ok; served as `text/markdown; charset=utf-8`) |
+| `User-Agent` matches a known LLM bot           | `<path>.md` (HTML fallback when the twin is not ok; served as `text/markdown; charset=utf-8`) |
 | Everything else                                | HTML page — plus a `Link` header advertising its `.md` twin |
 
 On the normal HTML page response, the worker also adds an [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) `Link` header so an agent can discover the markdown twin from a plain GET, without sniffing the User-Agent or guessing the right `Accept`:

@@ -222,9 +222,13 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
 
     const mdResponse = await fetchTwin();
 
-    return mdResponse.status === 404
-      ? withSocialImages(withVary(await env.ASSETS.fetch(request)), url)
-      : withVary(mdResponse);
+    if (!mdResponse.ok) {
+      return withSocialImages(withVary(await env.ASSETS.fetch(request)), url);
+    }
+    // Static-asset hosts may type a `.md` file as text/plain or octet-stream.
+    const markdown = new Response(mdResponse.body, mdResponse);
+    markdown.headers.set("Content-Type", "text/markdown; charset=utf-8");
+    return withVary(markdown);
   };
 }
 
