@@ -149,3 +149,19 @@ test("createMdResponder is the router's fetch as a plain function", async () => 
   const res = await createMdResponder()(get("https://x.test/a"), env);
   assert.equal(links(res), '</a.md>; rel="alternate"; type="text/markdown"');
 });
+
+test("a twin is served as text/markdown, and any non-ok twin reply falls back to HTML", async () => {
+  const typed = await createMdRouter().fetch(get("https://x.test/a", { accept: "text/markdown" }), {
+    ASSETS: assets({ "/a": html(), "/a.md": { body: "# a", type: "text/plain" } }),
+  });
+  assert.equal(typed.headers.get("content-type"), "text/markdown; charset=utf-8");
+  for (const status of [403, 500]) {
+    const res = await createMdRouter().fetch(get("https://x.test/a", { accept: "text/markdown" }), {
+      ASSETS: assets({
+        "/a": html("<p>a</p>"),
+        "/a.md": { body: "err", type: "text/plain", status },
+      }),
+    });
+    assert.equal(await res.text(), "<p>a</p>", `status ${status}`);
+  }
+});
