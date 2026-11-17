@@ -10,4 +10,4 @@
 //   - https://developers.google.com/search/docs/crawling-indexing/google-special-case-crawlers (Google-Extended)
 
 export const LLM_BOT_UA =
-  /gptbot|chatgpt-user|oai-searchbot|claudebot|claude-web|anthropic-ai|perplexitybot|ccbot|applebot-extended|google-extended|cohere-ai|bytespider|diffbot/i;
+  /gptbot|chatgpt-user|oai-searchbot|claudebot|claude-web|anthropic-ai|perplexitybot|ccbot|applebot-extended|google-extended|cohere-ai|bytespider|diffbot|claude-user|claude-searchbot|amazonbot|duckassistbot/i;
