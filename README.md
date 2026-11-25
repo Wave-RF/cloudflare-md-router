@@ -24,7 +24,9 @@ Link: </foo/bar.md>; rel="alternate"; type="text/markdown"
 
 This is on by default (only for a `200 text/html` reply to an extension-less GET); disable it with `advertiseTwin: false`.
 
-Because the worker negotiates on the `Accept` header, two clients can get different representations of the same URL. If you put a shared cache in front of it, set `vary: true` to add a `Vary: Accept` header to the negotiated responses, so a cache that honors `Vary` keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. That holds fully only when `Accept` is the only routing input: with User-Agent routing on (the default) a bot gets markdown whatever `Accept` it sends, and a cache stores that reply under the bot's `Accept` value, so a browser sending the same `Accept` string can be served it; pair `vary: true` with `botUserAgents: false` (see [Accept-only negotiation](#accept-only-negotiation-botuseragents-false)) if that matters. The header alone isn't enough everywhere: Cloudflare's CDN cache ignores `Vary` by default, and needs a [Cache Rule with the Vary setting](https://developers.cloudflare.com/cache/concepts/vary/) for `accept`. It's off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
+Because the worker negotiates per request, two clients can get different representations of the same URL. Set `vary: true` to add a `Vary: Accept` header to the negotiated responses, so a cache that honors `Vary` keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. It matters where something caches the Worker's responses: a browser, a proxy or CDN in front of your site, or Cloudflare's [Workers Caching](https://developers.cloudflare.com/workers/cache/#content-negotiation-with-vary) (`"cache": { "enabled": true }` in `wrangler.jsonc`), which stores one variant per `Accept` value. Without Workers Caching, Cloudflare doesn't cache the Worker's responses: the Worker [runs in front of the zone's cache](https://developers.cloudflare.com/workers/reference/how-the-cache-works/), which keeps what a Worker fetches from an origin or stores with the Cache API, not what it returns, so zone Cache Rules and their Vary setting don't apply to them. Static assets are cached per file, so a page and its `.md` twin never share an entry. If your own Worker caches these responses with the [Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/), make its key cover `Accept`.
+
+`Vary: Accept` is the whole story only when `Accept` is the only routing input: with User-Agent routing on (the default) a bot gets markdown whatever `Accept` it sends, and a cache stores that reply under the bot's `Accept` value, so a browser sending the same `Accept` string can be served it; pair `vary: true` with `botUserAgents: false` (see [Accept-only negotiation](#accept-only-negotiation-botuseragents-false)) if that matters. `vary` is off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
 
 The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-Web, Claude-User, Claude-SearchBot, Amazonbot, DuckAssistBot, anthropic-ai, PerplexityBot, CCBot, Applebot-Extended, Google-Extended, cohere-ai, Bytespider, Diffbot. See `src/bots.ts`.
 
@@ -112,8 +114,9 @@ export default createMdRouter({
   // Left commented out here: it would also make `checkTwin` below a no-op.
   // advertiseTwin: false,
 
-  // Add `Vary: Accept` to negotiated responses so a shared cache doesn't
-  // cross-serve the HTML and markdown representations (default: false).
+  // Add `Vary: Accept` to negotiated responses so a cache in front of the
+  // Worker doesn't cross-serve the HTML and markdown representations
+  // (default: false).
   // With UA routing on (as here), a bot's markdown is cached under that bot's
   // `Accept`; use `botUserAgents: false` when the cache must never cross-serve.
   vary: true,
@@ -140,7 +143,7 @@ import { createMdRouter } from "@wave-rf/cloudflare-md-router";
 export default createMdRouter({ botUserAgents: false });
 ```
 
-Markdown is then served only when the request asks for it: `Accept: text/markdown`, or one of your `acceptMarkdown` tokens. Everything else gets the HTML page, still with the `Link` header advertising the `.md` twin, so an agent can find it from a plain GET. The trade-off: crawlers that don't negotiate and don't follow the `Link` header will receive HTML. Because `Accept` is then the only routing input, `vary: true` lets a shared cache that honors `Vary: Accept` store the negotiated responses safely (on Cloudflare, that takes the Cache Rule above).
+Markdown is then served only when the request asks for it: `Accept: text/markdown`, or one of your `acceptMarkdown` tokens. Everything else gets the HTML page, still with the `Link` header advertising the `.md` twin, so an agent can find it from a plain GET. The trade-off: crawlers that don't negotiate and don't follow the `Link` header will receive HTML. Because `Accept` is then the only routing input, `vary: true` lets a shared cache that honors `Vary: Accept` store the negotiated responses safely (see the caching note under [Behavior](#behavior)).
 
 ### Inside a larger Worker (`createMdResponder`)
 

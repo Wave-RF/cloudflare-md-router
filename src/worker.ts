@@ -28,17 +28,22 @@ export interface MdRouterOptions {
   advertiseTwin?: boolean;
   /** Append `Vary: Accept` to the responses this worker negotiates on the
    *  `Accept` header (the `.md` twin, the HTML fallback when the twin is
-   *  missing, and the normal HTML page), so a shared cache that honors `Vary`
+   *  missing, and the normal HTML page), so a cache that honors `Vary`
    *  doesn't serve the HTML representation to a client that asked for
-   *  markdown — or vice-versa (RFC 9110 §12.5.5). Cloudflare's CDN cache
-   *  ignores `Vary` unless a Cache Rule's Vary setting covers `accept`. Merges with any existing
-   *  `Vary` rather than replacing it; verbatim pass-through responses (non-GET,
-   *  extension-bearing paths) are left untouched. Only `Accept` is listed:
-   *  `User-Agent` is also (by default) a routing input, but `Vary: User-Agent` defeats
-   *  shared caching (huge UA cardinality), so it is intentionally omitted. With User-Agent routing on, a bot's
-   *  markdown reply is therefore cached under that bot's `Accept`; use
-   *  `botUserAgents: false` when the cache must never cross-serve.
-   *  Default: `false`. */
+   *  markdown — or vice-versa (RFC 9110 §12.5.5). It matters where something
+   *  caches the Worker's responses: a browser, a proxy or CDN in front of the
+   *  site, or Workers Caching (`cache.enabled` in `wrangler.jsonc`), which
+   *  honors `Vary`. Without that, Cloudflare doesn't cache them: the Worker runs
+   *  in front of the zone's cache, so zone Cache Rules don't apply. Merges with
+   *  any existing `Vary` rather than replacing it; verbatim pass-through
+   *  responses (non-GET, extension-bearing paths) are left untouched. Only
+   *  `Accept` is listed: `User-Agent` is also (by default) a routing input, but
+   *  `Vary: User-Agent` defeats shared caching (huge UA cardinality), so it is
+   *  intentionally omitted. With User-Agent routing on, a bot's markdown reply
+   *  is therefore cached under that bot's `Accept`; use `botUserAgents: false`
+   *  when the cache must never cross-serve.
+   *  Default: `false`.
+   *  @see https://developers.cloudflare.com/workers/cache/#content-negotiation-with-vary */
   vary?: boolean;
   /** Before advertising a page's `.md` twin in the `Link` header, fetch it from
    *  `ASSETS` and advertise it only when it exists (a `2xx` reply). Costs one
@@ -85,8 +90,9 @@ const defaultMdPathFor = (pathname: string): string => {
  *  gets a `Link` header advertising its `.md` twin unless `advertiseTwin` is
  *  disabled (see {@link MdRouterOptions.advertiseTwin}). Opt into a
  *  `Vary: Accept` header on the `Accept`-negotiated responses with
- *  {@link MdRouterOptions.vary} so shared caches don't cross-serve the two
- *  representations.
+ *  {@link MdRouterOptions.vary} so a cache in front of the Worker doesn't
+ *  cross-serve the two representations (its JSDoc says which caches that
+ *  covers, and what it can't separate while User-Agent routing is on).
  *
  *  Requires an `ASSETS` Fetcher binding in your `wrangler.jsonc`, and the Worker
  *  must run before the static-asset matcher for page routes (`run_worker_first`:
