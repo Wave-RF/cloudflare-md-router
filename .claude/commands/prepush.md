@@ -9,12 +9,15 @@ The mandatory pre-push self-review. A push to a PR branch is blocked until a mar
 
 1. **Commit your work.** Reviews and markers are keyed to HEAD/tree, so the tree must be settled first.
 2. **`pnpm run verify` is green for the current tree** (biome check + tsc --noEmit + node --test + the release-config check). The push also needs its `tmp/verify-passed-tree-<TREE>` marker, which `pnpm run verify` writes on success.
+3. **This session started in this repo (or a worktree of it).** Otherwise the reviewer subagent types and the marker hook aren't loaded, and a general-purpose stand-in writes no marker. Run `scripts/prepush-headless.sh` from the work tree instead: it runs this command in a headless Claude Code process started there.
 
 ## 1. See the change and the reviewer set
 
 ```bash
-git diff --stat main...HEAD          # size + which files changed
-git diff --name-only main...HEAD     # exact paths
+git fetch --quiet origin main        # keep the review base current
+scripts/review-base.sh               # the base: origin/main, else main (a worktree's local main is often stale)
+git diff --stat <base>...HEAD        # size + which files changed
+git diff --name-only <base>...HEAD   # exact paths
 scripts/pre-push-reviewers.sh        # the gating reviewers, one subagent name per line
 ```
 
@@ -24,8 +27,8 @@ Judge each reviewer against the **actual diff**. **Bias to running — skip only
 
 Rules of thumb for today's reviewers:
 
-- **`pre-push-reviewer`** (code) — run for any change to `src/` (`worker.ts`, `index.ts`, `bots.ts`), `scripts/`, `.github/` workflows, `tsconfig.json`, or config. Skip only when the diff is purely documentation prose (`*.md`) or other non-code text.
-- **`docs-reviewer`** (docs prose + code↔docs sync) — run when docs changed (`README.md`, or the JSDoc in `src/`) **or** when code changed that could need a doc update (a new/changed `MdRouterOptions` option, export, default, a change to the `LLM_BOT_UA` bot list, or the `wrangler.jsonc` contract — per AGENTS.md §Documentation Sync). Skip only when neither is true: an internal refactor with no public-surface or doc impact, a comment/whitespace-only edit.
+- **`pre-push-reviewer`** (code) — run for any change to `src/` (`worker.ts`, `index.ts`, `bots.ts`), `bin/`, `test/`, `scripts/`, `.githooks/`, `.claude/hooks/`, `.github/` workflows, `tsconfig.json`, or config. Skip only when the diff is purely documentation prose (`*.md`) or other non-code text.
+- **`docs-reviewer`** (docs prose + code↔docs sync) — run when docs changed (`README.md`, or the JSDoc in `src/`) **or** when code changed that could need a doc update (a new/changed `MdRouterOptions` option, export, default, a change to the `LLM_BOT_UA` bot list, the `wrangler.jsonc` contract, or a `cloudflare-md-router dev` option/default in `bin/` — per AGENTS.md §Documentation Sync). Skip only when neither is true: an internal refactor with no public-surface or doc impact, a comment/whitespace-only edit.
 - A genuinely **trivial** change (typo in a comment, rename a local var, reflow whitespace) can skip both — but read the diff and be sure it really is trivial.
 
 ## 3. Run the ones you keep — in parallel
@@ -52,4 +55,4 @@ It prints a ⚠️ when the skip looks risky (e.g. skipping docs review when doc
 4. Re-decide §2 for the new HEAD, then re-run the kept reviewers in fresh context (parallel) and re-skip the rest.
 5. Repeat until a marker exists for HEAD from every listed reviewer.
 
-Only then does `git push` succeed (and the gate prints any judgment-skips for the record). If a reviewer returns `block`, **stop and surface it to the user** — don't push past it. Never `--no-verify`.
+Only then does `git push` succeed (and the gate prints any judgment-skips for the record). `scripts/check-review-markers.sh` shows what's still missing for HEAD. If a reviewer returns `block`, **stop and surface it to the user** — don't push past it. Never `--no-verify`.

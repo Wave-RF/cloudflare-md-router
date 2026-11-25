@@ -3,19 +3,56 @@
 # Tree-keyed (not commit-keyed) so verify → commit → push needs no re-run when
 # the tree is unchanged. Universal — humans and Claude Code alike. Bypass:
 # `git push --no-verify` (humans only; agents must not — see AGENTS.md).
+#
+# Agent backstop: when the push runs from a Claude Code shell ($CLAUDECODE is
+# set in every Bash tool call), a branch push (any refs/heads/* except main)
+# also needs every pre-push review marker for the pushed commit
+# (scripts/check-review-markers.sh). The Claude Code gate
+# (.claude/hooks/agent-bash-gate.sh) already checks this, but only in a session
+# that STARTED in this repo or one of its worktrees — Claude Code loads project
+# hooks, agents and commands from the launch directory. A session launched
+# elsewhere loads none of them, so without this check its push went through
+# unreviewed and nothing said so. Human pushes are unaffected.
 
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
-while read -r _ local_sha _ _; do
+zero="0000000000000000000000000000000000000000"
+
+while read -r _ local_sha remote_ref _; do
   [ -z "${local_sha:-}" ] && continue
-  [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+  [ "$local_sha" = "$zero" ] && continue
   marker=$(scripts/ci-marker.sh path-for-commit "$local_sha" 2>/dev/null) || {
     echo "🛑 pre-push: can't resolve tree for ${local_sha:0:8}." >&2; exit 1
   }
   if [ ! -f "$marker" ]; then
     tree="${marker#tmp/verify-passed-tree-}"
     echo "🛑 pre-push: 'pnpm run verify' has not been run for ${local_sha:0:8} (tree ${tree:0:8}). Run 'pnpm run verify' or 'git push --no-verify'." >&2
+    exit 1
+  fi
+
+  [ -n "${CLAUDECODE:-}" ] || continue
+  case "$remote_ref" in
+    refs/heads/main) continue ;;
+    refs/heads/*) ;;
+    *) continue ;;
+  esac
+  missing=$(bash scripts/check-review-markers.sh "$local_sha" 2>&1 </dev/null)
+  if [ $? != 0 ]; then
+    cat >&2 <<EOF
+🛑 pre-push (Claude Code session): missing pre-push review marker(s) for ${local_sha:0:8} → ${remote_ref#refs/heads/}:
+${missing}
+
+Markers are written only by the repo's own reviewer agents (the SubagentStop hook
+.claude/hooks/review-marker.sh on VERDICT: ship_it) or by a logged
+scripts/skip-pre-push-review.sh. If this session started outside this repo, its
+project agents and hooks are not loaded: run the review in a Claude Code process
+started here instead:
+
+  scripts/prepush-headless.sh
+
+See AGENTS.md §"Agent PR Discipline".
+EOF
     exit 1
   fi
 done

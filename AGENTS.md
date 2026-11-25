@@ -7,7 +7,7 @@ Context for AI coding agents (Claude Code, Copilot, Cursor, etc.) working on thi
 The non-negotiables, ordered by how often agents miss them. These override convenience: if a rule blocks you, satisfy it; don't work around it.
 
 1. **Validate locally before every push** — `pnpm run verify` (Biome + `tsc --noEmit` + `node --test` + the offline release-config check). Don't use CI as your first feedback loop ([§Local-First Validation](#local-first-validation)).
-2. **A PR-branch push needs every pre-push reviewer satisfied** — run **`/prepush`**: it reads `scripts/pre-push-reviewers.sh`, runs the reviewers the change needs in parallel (fresh context), skips the rest *on the record*, and loops until each it ran returns `ship_it` ([§Agent PR Discipline](#agent-pr-discipline)).
+2. **A PR-branch push needs every pre-push reviewer satisfied** — run **`/prepush`**: it reads `scripts/pre-push-reviewers.sh`, runs the reviewers the change needs in parallel (fresh context), skips the rest *on the record*, and loops until each it ran returns `ship_it`. It only works in a Claude Code session **started in this repo or one of its worktrees**; from anywhere else run **`scripts/prepush-headless.sh`** ([§Agent PR Discipline](#agent-pr-discipline)).
 3. **Every public-surface change updates its docs in the same PR** — a changed `MdRouterOptions` option / export / default / the `LLM_BOT_UA` bot list / the `wrangler.jsonc` contract must update the **`src/` JSDoc** **and** `README.md` ([§Documentation Sync](#documentation-sync)). Release notes are **generated into GitHub Releases** (`CHANGELOG.md` is frozen history) — don't hand-edit it; just use the right Conventional-Commit type, because it decides whether the merge releases ([§Release Process](#release-process)).
 4. **Address and resolve every review finding** — fix it or track it in an issue; never silently drop one ([§Review Response](#review-response)).
 5. **Drafts only; valid title** — `gh pr create --draft` (never `gh pr ready`/approve); the PR **title** must pass Conventional Commits — check with `scripts/lint-pr-title.sh "<title>"` before creating ([§Agent PR Discipline](#agent-pr-discipline)).
@@ -59,7 +59,7 @@ The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `t
 Enforced via git hooks (installed by `pnpm run setup`; apply to humans and agents alike):
 
 - **`.githooks/pre-commit`** runs `pnpm run verify` unless the current tree's marker already exists (cached).
-- **`.githooks/pre-push`** requires `tmp/verify-passed-tree-<TREE>` for each pushed commit's tree. Tree-keyed, so `verify → commit → push` needs no re-run when the tree is unchanged. Skipped on CI (`$CI` set).
+- **`.githooks/pre-push`** requires `tmp/verify-passed-tree-<TREE>` for each pushed commit's tree. Tree-keyed, so `verify → commit → push` needs no re-run when the tree is unchanged. From a Claude Code shell it also checks the pre-push review markers (§Agent PR Discipline). Skipped on CI (`$CI` set).
 
 Bypass (`--no-verify`) is for human WIP only; agents must not (§Don't bypass the gates).
 
@@ -98,6 +98,8 @@ Force-pushes (`--force`, `--force-with-lease`) are blocked by `.claude/settings.
 
 Agents follow the universal git hooks (pre-commit + pre-push in `.githooks/`). On top of that, PR-workflow rules with no human analog are checked by `.claude/hooks/agent-bash-gate.sh`. The gate is a guard rail against accidents, not adversarial enforcement.
 
+**Claude Code loads this repo's agents, commands and hooks only in a session that started here** (the repo root or one of its worktrees). A session launched from another directory has no `pre-push-reviewer`/`docs-reviewer` subagent types, no `/prepush`, and none of the hooks below, so nothing writes review markers. Use `scripts/prepush-headless.sh` there (§Pre-push self-review).
+
 ### Drafts only
 
 Create PRs with `gh pr create --draft`. Only humans flip draft → ready (`gh pr ready` is blocked) and only humans approve / request changes (`gh pr review --approve`/`--request-changes` are blocked). Adding/removing human reviewers is humans-only.
@@ -111,7 +113,24 @@ Before pushing a non-main branch, **every** reviewer in `scripts/pre-push-review
 - **`pre-push-reviewer`** (code) — the full diff vs `main`, the latest commit, open PR comments/reviews, CI status, linked issues.
 - **`docs-reviewer`** (docs) — `README.md`/the `src/` JSDoc for accuracy-vs-code, runnable examples, clarity, **plus** code↔docs sync (code that changed but whose docs didn't).
 
-**`ship_it` requires zero findings at any severity** — a single `[MAY]` forces `iterate`. The orchestrator loops: address every finding, commit, re-invoke the reviewer(s) in fresh context, until all say `ship_it`. The push gate (`agent-bash-gate.sh`) lists any missing markers; `git push` succeeds only when every listed reviewer has one. On `block`, stop and surface it to the user.
+**`ship_it` requires zero findings at any severity** — a single `[MAY]` forces `iterate`. The orchestrator loops: address every finding, commit, re-invoke the reviewer(s) in fresh context, until all say `ship_it`. On `block`, stop and surface it to the user.
+
+Reviewers diff against `scripts/review-base.sh` (`origin/main`, else `main`): in a worktree, local `main` is shared with the main checkout and is often stale, and `git diff main...HEAD` would count upstream commits as part of the change. Run `git fetch origin main` first.
+
+**Where the markers are checked.** Markers are local files (`tmp/` in the work tree being pushed), so CI can't see them. `scripts/check-review-markers.sh <sha>` is the one check, used in two places:
+
+- the Claude Code push gate (`agent-bash-gate.sh`, PreToolUse on `git push`), in sessions started in this repo or a worktree of it; it lists any missing markers before the push runs;
+- `.githooks/pre-push`, for every branch push made from a Claude Code shell (`$CLAUDECODE` set), wherever the session started. This backstop exists because a session launched elsewhere skips the gate, and a review "run" by general-purpose agents following the `.md` definitions writes no markers, so that push used to go through unreviewed without a word.
+
+Human pushes from your own shell aren't review-gated. Other agents (Copilot, Cursor, …) aren't checked mechanically: for them the rule is policy.
+
+**From a session that didn't start in this repo** (or with no interactive session at all), run the review in a fresh headless Claude Code process started at the work tree's root, so the real agents, `/prepush` and hooks load:
+
+```bash
+scripts/prepush-headless.sh          # /prepush; `all` runs every reviewer
+```
+
+It runs `claude -p "/prepush"` from the work tree root with read-only tools (`--permission-mode dontAsk`, an `--allowedTools` list, no `Edit`/`Write`), reports each reviewer's findings, then checks the markers for HEAD: exit 0 when all are present, 1 when some are missing. It reviews and stops; you fix findings, commit, and run it again until it exits 0. It needs the `claude` CLI and fails with a clear message without it. Don't emulate the reviewers with general-purpose agents: no marker, and the push is blocked.
 
 ### Adding a pre-push reviewer
 
@@ -125,7 +144,7 @@ The marker `tmp/<name>-passed-<HEAD>` is then required automatically, `review-ma
 ### Don't bypass the gates
 
 - `--no-verify` is for human WIP; agents don't use it.
-- Markers are written by tooling, never by hand: `tmp/verify-passed-tree-*` by `pnpm run verify`; `tmp/<reviewer>-passed-*` by the `review-marker.sh` SubagentStop hook on `ship_it`, or by `scripts/skip-pre-push-review.sh` for a deliberately-skipped reviewer (which logs the reason). Don't `touch`/`Write`/`Edit` a marker. To skip, use the skip command so it's recorded.
+- Markers are written by tooling, never by hand: `tmp/verify-passed-tree-*` by `pnpm run verify`; `tmp/<reviewer>-passed-*` by the `review-marker.sh` SubagentStop hook on `ship_it` (only for a subagent whose type is the reviewer's name), or by `scripts/skip-pre-push-review.sh` for a deliberately-skipped reviewer (which logs the reason). Don't `touch`/`Write`/`Edit` a marker. To skip, use the skip command so it's recorded.
 
 These are policy, not mechanically enforced — an agent can edit the gate itself. Trust beats whack-a-mole.
 
@@ -149,6 +168,8 @@ Before finishing, grep the identifiers you touched (option names, export names, 
 
 This repo is set up for [Worktrunk](https://github.com/) (`wt`, config in `.config/wt.toml`): `wt switch --create <branch>` seeds `node_modules/` from main (per `.worktreeinclude`), runs `pnpm install`, and installs the git hooks (`pnpm run setup`). `.worktrees/` is gitignored. `wt` is an external tool (install it separately); without it, the manual equivalent is `git worktree add` + `pnpm install` + `pnpm run setup`.
 
+Each work tree has its own `tmp/`, so run `pnpm run verify` and the review in the worktree you push from; markers from another checkout don't count. Start the Claude Code session in the worktree (or run `scripts/prepush-headless.sh` there). The hooks follow the session into a worktree of this repo (they resolve the work tree from the hook's `cwd`, not only `$CLAUDE_PROJECT_DIR`).
+
 ## File Structure
 
 ```text
@@ -158,7 +179,7 @@ src/bots.ts             → LLM_BOT_UA, the default crawler User-Agent regex (sh
 bin/cli.mjs, dev.mjs, lib.mjs → the `cloudflare-md-router dev` CLI (ships; plain Node ESM, Node built-ins only; Node, NOT Workers — `src/` must never import `bin/`)
 test/                   → node --test suite for bin/ (pure helpers + fixture-site smoke test, run under npm and pnpm; no network)
 tsconfig.json           → strict, ESNext, Bundler resolution, allowImportingTsExtensions (the typecheck gate)
-scripts/                → shell + node tooling (PR-title lint, reviewer manifest, markers, release-config check, repo setup)
+scripts/                → shell + node tooling (PR-title lint, reviewer manifest, review base + marker check, headless /prepush, markers, release-config check, repo setup)
 .githooks/              → universal pre-commit + pre-push (installed via pnpm run setup)
 .claude/                → settings, review subagents, /prepush + /release commands, gate/marker/format hooks
 .github/                → CI, pr-title, publish (semantic-release + OIDC), dependabot; prompts/ review rubrics

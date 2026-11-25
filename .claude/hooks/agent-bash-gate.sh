@@ -36,7 +36,20 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null) \
   || block "Could not parse hook payload as JSON."
 [ -z "$cmd" ] && exit 0
 
-cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
+# Work in the work tree the session is actually in: the payload's `cwd` when it
+# is this repo or one of its git worktrees (EnterWorktree / `wt` move the
+# session there, but $CLAUDE_PROJECT_DIR stays at the launch directory, whose
+# HEAD and tmp/ markers belong to a different branch). Anything else — `cwd`
+# in an unrelated repo, or no `cwd` — falls back to $CLAUDE_PROJECT_DIR.
+# Keep in sync with .claude/hooks/review-marker.sh.
+project_dir="${CLAUDE_PROJECT_DIR:-.}"
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
+if [ -n "$hook_cwd" ] \
+   && cwd_common=$(git -C "$hook_cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+   && [ "$cwd_common" = "$(git -C "$project_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
+  project_dir=$(git -C "$hook_cwd" rev-parse --show-toplevel)
+fi
+cd "$project_dir" 2>/dev/null || exit 0
 
 # Strip quoted segments so commands that mention a blocked pattern in a string
 # don't false-positive. Doesn't cover heredocs — pass long bodies via
@@ -119,58 +132,45 @@ if git_subcmd 'push' && ! git_subcmd_is_help 'push'; then
   head_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
   branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
   if [ -n "$head_sha" ] && [ -n "$branch" ] && [ "$branch" != "main" ]; then
-    # Only gate when there's actually a diff to review: commits on HEAD not yet on
-    # the base (local main, else origin/main). No base resolvable → fail safe and
-    # gate. A branch with no delta vs the base has nothing for the reviewers.
-    base=""
-    for ref in main origin/main; do
-      if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then base="$ref"; break; fi
-    done
-    has_delta=1
-    if [ -n "$base" ] && [ -z "$(git rev-list "${base}..HEAD" 2>/dev/null)" ]; then
-      has_delta=0
+    # scripts/check-review-markers.sh is the shared check (also run by the git
+    # backstop in .githooks/pre-push): it exits 0 when the branch has nothing
+    # beyond the review base (scripts/review-base.sh) or every listed reviewer
+    # has a marker for HEAD, 1 with the missing ones listed, and 2 when the
+    # reviewer list is missing/empty/corrupt — then we can't know what to
+    # require, so fail CLOSED rather than let an un-reviewed push by.
+    # Run the check that ships with THIS hook (the launch checkout), so a
+    # worktree whose branch predates it is still checked, not wrongly blocked.
+    reviewers_script="scripts/pre-push-reviewers.sh"
+    hook_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+    missing=$(bash "$hook_repo/scripts/check-review-markers.sh" HEAD 2>/dev/null)
+    status=$?
+    if [ "$status" -ge 2 ]; then
+      block "reviewer list '$reviewers_script' produced no valid reviewer names (missing, unreadable, empty, or corrupt) — can't tell which reviews gate this push. Fix it before pushing."
     fi
-    if [ "$has_delta" = "1" ]; then
-      # Resolve the gating reviewers from the single source of truth. If we
-      # can't get a valid reviewer list — file missing, unreadable, empty, or
-      # corrupt (a syntax error / conflict markers make `bash` error out to
-      # empty stdout) — we can't know what to require, so fail CLOSED (block)
-      # rather than silently let an un-reviewed push by. Capture once and
-      # validate each name for filename-safety before building a marker path.
-      reviewers_script="scripts/pre-push-reviewers.sh"
-      reviewers_list=$(bash "$reviewers_script" 2>/dev/null | grep -E '^[A-Za-z0-9._-]+$')
-      if [ -z "$reviewers_list" ]; then
-        block "reviewer list '$reviewers_script' produced no valid reviewer names (missing, unreadable, empty, or corrupt) — can't tell which reviews gate this push. Fix it before pushing."
-      fi
-      missing=""
-      for r in $reviewers_list; do
-        [ -f "tmp/${r}-passed-${head_sha}" ] \
-          || missing="${missing}  - ${r} -> tmp/${r}-passed-${head_sha:0:8}
-"
-      done
-      if [ -n "$missing" ]; then
-        cat >&2 <<EOF
+    if [ "$status" = 1 ]; then
+      cat >&2 <<EOF
 
 🛑 Claude PR discipline gate: missing pre-push review marker(s) for HEAD (${head_sha:0:8}) on branch '${branch}':
 
 ${missing}
+
 Run /prepush — it reads ${reviewers_script}, runs the reviewers this change needs
 in parallel (fresh context), and skips the rest on the record. Each reviewer it
 runs must reach VERDICT: ship_it (zero findings) to write its marker; a skipped
 reviewer gets a logged marker via scripts/skip-pre-push-review.sh. The push
 succeeds once every listed reviewer has a marker — see AGENTS.md §"Agent PR
-Discipline".
+Discipline". A reviewer emulated by a general-purpose agent (instead of
+subagent_type: <reviewer>) writes no marker.
 EOF
-        exit 2
-      fi
-      # All required markers present. Surface any reviewers that were skipped by
-      # judgment (recorded by scripts/skip-pre-push-review.sh) so the skip is
-      # visible at push time, not just in the /prepush conversation. Advisory.
-      skiplog="tmp/review-skips-${head_sha}.log"
-      if [ -f "$skiplog" ]; then
-        echo "ℹ️  pre-push: reviewer(s) skipped by judgment for ${head_sha:0:8} (see ${skiplog}):" >&2
-        sed 's/^/    ⏭️  /' "$skiplog" >&2
-      fi
+      exit 2
+    fi
+    # All required markers present. Surface any reviewers that were skipped by
+    # judgment (recorded by scripts/skip-pre-push-review.sh) so the skip is
+    # visible at push time, not just in the /prepush conversation. Advisory.
+    skiplog="tmp/review-skips-${head_sha}.log"
+    if [ -f "$skiplog" ]; then
+      echo "ℹ️  pre-push: reviewer(s) skipped by judgment for ${head_sha:0:8} (see ${skiplog}):" >&2
+      sed 's/^/    ⏭️  /' "$skiplog" >&2
     fi
   fi
 fi
