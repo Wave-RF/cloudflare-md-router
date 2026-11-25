@@ -24,7 +24,7 @@ Link: </foo/bar.md>; rel="alternate"; type="text/markdown"
 
 This is on by default (only for a `200 text/html` reply to an extension-less GET); disable it with `advertiseTwin: false`.
 
-Because the worker negotiates per request, two clients can get different representations of the same URL. Set `vary: true` to add a `Vary: Accept` header to the negotiated responses, so a cache that honors `Vary` keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. It matters where something caches the Worker's responses: a browser, a proxy or CDN in front of your site, or Cloudflare's [Workers Caching](https://developers.cloudflare.com/workers/cache/#content-negotiation-with-vary) (`"cache": { "enabled": true }` in `wrangler.jsonc`), which stores one variant per `Accept` value. Without Workers Caching, Cloudflare doesn't cache the Worker's responses: the Worker [runs in front of the zone's cache](https://developers.cloudflare.com/workers/reference/how-the-cache-works/), which keeps what a Worker fetches from an origin or stores with the Cache API, not what it returns, so zone Cache Rules and their Vary setting don't apply to them. Static assets are cached per file, so a page and its `.md` twin never share an entry. If your own Worker caches these responses with the [Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/), make its key cover `Accept`.
+Because the worker negotiates per request, two clients can get different representations of the same URL. Set `vary: true` to add a `Vary: Accept` header to the negotiated responses, so a cache that honors `Vary` keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. It matters where something caches the Worker's responses: a browser, a proxy or CDN in front of your site, or Cloudflare's [Workers Caching](https://developers.cloudflare.com/workers/cache/#content-negotiation-with-vary) (`"cache": { "enabled": true }` in `wrangler.jsonc`), which stores one variant per `Accept` value (it also [answers `HEAD` from the `GET` entry](https://developers.cloudflare.com/workers/cache/cache-keys/), so a `HEAD` then gets the negotiated headers rather than the pass-through). Without Workers Caching, Cloudflare doesn't cache the Worker's responses: the Worker [runs in front of the zone's cache](https://developers.cloudflare.com/workers/reference/how-the-cache-works/), which keeps what a Worker fetches from an origin or stores with the Cache API, not what it returns, so zone Cache Rules and their Vary setting don't apply to them. Static assets are cached per file, so a page and its `.md` twin never share an entry. If your own Worker caches these responses with the [Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/), make its key cover `Accept`. Workers Caching [keys on the path, not the hostname](https://developers.cloudflare.com/workers/cache/cache-keys/), so with `canonicalOrigin` (whose image rewrite depends on the host) a page cached on one host can be served on another; keep caching off for a Worker that serves both.
 
 `Vary: Accept` is the whole story only when `Accept` is the only routing input: with User-Agent routing on (the default) a bot gets markdown whatever `Accept` it sends, and a cache stores that reply under the bot's `Accept` value, so a browser sending the same `Accept` string can be served it; pair `vary: true` with `botUserAgents: false` (see [Accept-only negotiation](#accept-only-negotiation-botuseragents-false)) if that matters. `vary` is off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
 
@@ -154,7 +154,10 @@ import { createMdResponder } from "@wave-rf/cloudflare-md-router";
 
 const respond = createMdResponder({ vary: true });
 export default {
-  fetch: (request, env) => (isApi(request) ? api(request, env) : respond(request, env)),
+  fetch: (request, env) =>
+    new URL(request.url).pathname.startsWith("/api/")
+      ? Response.json({ ok: true }) // your own routes here
+      : respond(request, env),
 };
 ```
 

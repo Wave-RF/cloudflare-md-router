@@ -34,8 +34,9 @@ export interface MdRouterOptions {
    *  caches the Worker's responses: a browser, a proxy or CDN in front of the
    *  site, or Workers Caching (`cache.enabled` in `wrangler.jsonc`), which
    *  honors `Vary`. Without that, Cloudflare doesn't cache them: the Worker runs
-   *  in front of the zone's cache, so zone Cache Rules don't apply. Merges with
-   *  any existing `Vary` rather than replacing it; verbatim pass-through
+   *  in front of the zone's cache, so zone Cache Rules don't apply. A Worker
+   *  that stores these responses with the Cache API must cover `Accept` in its
+   *  cache key. Merges with any existing `Vary` rather than replacing it; verbatim pass-through
    *  responses (non-GET, extension-bearing paths) are left untouched. Only
    *  `Accept` is listed: `User-Agent` is also (by default) a routing input, but
    *  `Vary: User-Agent` defeats shared caching (huge UA cardinality), so it is
