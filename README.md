@@ -134,7 +134,7 @@ By default the worker also serves markdown to known crawler User-Agents, which h
 export default createMdRouter({ botUserAgents: false });
 ```
 
-Markdown is then served only when the request asks for it: `Accept: text/markdown`, or one of your `acceptMarkdown` tokens. Everything else gets the HTML page, still with the `Link` header advertising the `.md` twin, so an agent can find it from a plain GET. The trade-off: crawlers that don't negotiate and don't follow the `Link` header will receive HTML.
+Markdown is then served only when the request asks for it: `Accept: text/markdown`, or one of your `acceptMarkdown` tokens. Everything else gets the HTML page, still with the `Link` header advertising the `.md` twin, so an agent can find it from a plain GET. The trade-off: crawlers that don't negotiate and don't follow the `Link` header will receive HTML. Because `Accept` is then the only routing input, `vary: true` makes the negotiated responses fully safe to keep in a shared cache.
 
 To run the negotiation inside a larger Worker, use `createMdResponder(options)`, which returns a plain `(request, env) => Promise<Response>`:
 

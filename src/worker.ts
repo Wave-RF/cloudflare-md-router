@@ -33,7 +33,7 @@ export interface MdRouterOptions {
    *  markdown — or vice-versa (RFC 9110 §12.5.5). Merges with any existing
    *  `Vary` rather than replacing it; verbatim pass-through responses (non-GET,
    *  extension-bearing paths) are left untouched. Only `Accept` is listed:
-   *  `User-Agent` is also a routing input, but `Vary: User-Agent` defeats
+   *  `User-Agent` is also (by default) a routing input, but `Vary: User-Agent` defeats
    *  shared caching (huge UA cardinality), so it is intentionally omitted.
    *  Default: `false`. */
   vary?: boolean;
