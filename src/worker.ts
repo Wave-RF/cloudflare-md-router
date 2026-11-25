@@ -33,16 +33,18 @@ export interface MdRouterOptions {
    *  markdown — or vice-versa (RFC 9110 §12.5.5). It matters where something
    *  caches the Worker's responses: a browser, a proxy or CDN in front of the
    *  site, or Workers Caching (`cache.enabled` in `wrangler.jsonc`), which
-   *  honors `Vary`. Without that, Cloudflare doesn't cache them: the Worker runs
-   *  in front of the zone's cache, so zone Cache Rules don't apply. A Worker
-   *  that stores these responses with the Cache API must cover `Accept` in its
-   *  cache key. Merges with any existing `Vary` rather than replacing it; verbatim pass-through
-   *  responses (non-GET, extension-bearing paths) are left untouched. Only
-   *  `Accept` is listed: `User-Agent` is also (by default) a routing input, but
-   *  `Vary: User-Agent` defeats shared caching (huge UA cardinality), so it is
-   *  intentionally omitted. With User-Agent routing on, a bot's markdown reply
-   *  is therefore cached under that bot's `Accept`; use `botUserAgents: false`
-   *  when the cache must never cross-serve.
+   *  honors `Vary` but leaves the host out of its key (see
+   *  {@link MdRouterOptions.canonicalOrigin}). Without that, Cloudflare doesn't
+   *  cache them: the Worker runs in front of the zone's cache, so zone Cache
+   *  Rules don't apply. A Worker that stores these responses with the Cache API
+   *  must cover `Accept` in its cache key. Merges with any existing `Vary`
+   *  rather than replacing it; verbatim pass-through responses (non-GET,
+   *  extension-bearing paths) are left untouched. Only `Accept` is listed:
+   *  `User-Agent` is also (by default) a routing input, but `Vary: User-Agent`
+   *  defeats shared caching (huge UA cardinality), so it is intentionally
+   *  omitted. With User-Agent routing on, a bot's markdown reply is therefore
+   *  cached under that bot's `Accept`; use `botUserAgents: false` when the
+   *  cache must never cross-serve.
    *  Default: `false`.
    *  @see https://developers.cloudflare.com/workers/cache/#content-negotiation-with-vary */
   vary?: boolean;
@@ -65,6 +67,10 @@ export interface MdRouterOptions {
    *  preview resolve there. Nothing else is rewritten (`canonical` and `og:url`
    *  keep pointing at production), and it is a no-op on the canonical host.
    *  Uses `HTMLRewriter`; applies to HTML responses this worker negotiates.
+   *  The rewrite depends on the request host, which Workers Caching
+   *  (`cache.enabled`) leaves out of its cache key, so a page cached on one
+   *  host can be served on another: keep Workers Caching off for a Worker that
+   *  serves both the canonical and preview hosts.
    *  Default: unset (no rewriting). */
   canonicalOrigin?: string;
 }
