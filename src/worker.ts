@@ -35,7 +35,9 @@ export interface MdRouterOptions {
    *  `Vary` rather than replacing it; verbatim pass-through responses (non-GET,
    *  extension-bearing paths) are left untouched. Only `Accept` is listed:
    *  `User-Agent` is also (by default) a routing input, but `Vary: User-Agent` defeats
-   *  shared caching (huge UA cardinality), so it is intentionally omitted.
+   *  shared caching (huge UA cardinality), so it is intentionally omitted. With User-Agent routing on, a bot's
+   *  markdown reply is therefore cached under that bot's `Accept`; use
+   *  `botUserAgents: false` when the cache must never cross-serve.
    *  Default: `false`. */
   vary?: boolean;
   /** Before advertising a page's `.md` twin in the `Link` header, fetch it from

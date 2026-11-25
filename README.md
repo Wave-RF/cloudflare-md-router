@@ -24,7 +24,7 @@ Link: </foo/bar.md>; rel="alternate"; type="text/markdown"
 
 This is on by default (only for a `200 text/html` reply to an extension-less GET); disable it with `advertiseTwin: false`.
 
-Because the worker negotiates on the `Accept` header, two clients can get different representations of the same URL. If you put a shared cache in front of it, set `vary: true` to add a `Vary: Accept` header to the negotiated responses, so a cache that honors `Vary` keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. The header alone isn't enough everywhere: Cloudflare's CDN cache ignores `Vary` by default, and needs a [Cache Rule with the Vary setting](https://developers.cloudflare.com/cache/concepts/vary/) for `accept`. It's off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
+Because the worker negotiates on the `Accept` header, two clients can get different representations of the same URL. If you put a shared cache in front of it, set `vary: true` to add a `Vary: Accept` header to the negotiated responses, so a cache that honors `Vary` keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. That holds fully only when `Accept` is the only routing input: with User-Agent routing on (the default) a bot gets markdown whatever `Accept` it sends, and a cache stores that reply under the bot's `Accept` value, so a browser sending the same `Accept` string can be served it; pair `vary: true` with `botUserAgents: false` (see [Accept-only negotiation](#accept-only-negotiation-botuseragents-false)) if that matters. The header alone isn't enough everywhere: Cloudflare's CDN cache ignores `Vary` by default, and needs a [Cache Rule with the Vary setting](https://developers.cloudflare.com/cache/concepts/vary/) for `accept`. It's off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
 
 The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-Web, Claude-User, Claude-SearchBot, Amazonbot, DuckAssistBot, anthropic-ai, PerplexityBot, CCBot, Applebot-Extended, Google-Extended, cohere-ai, Bytespider, Diffbot. See `src/bots.ts`.
 
@@ -114,6 +114,8 @@ export default createMdRouter({
 
   // Add `Vary: Accept` to negotiated responses so a shared cache doesn't
   // cross-serve the HTML and markdown representations (default: false).
+  // With UA routing on (as here), a bot's markdown is cached under that bot's
+  // `Accept`; use `botUserAgents: false` when the cache must never cross-serve.
   vary: true,
 
   // Only advertise a twin that exists (default: false).
