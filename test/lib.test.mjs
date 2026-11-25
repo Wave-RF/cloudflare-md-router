@@ -425,14 +425,19 @@ test("output dir: one with a package.json, or git-tracked files, is refused", (t
   write(root, "dist/index.html", "built");
   assert.equal(spawnSync("git", ["init", "-q", root], { env: cleanGitEnv() }).status, 0);
   assert.equal(spawnSync("git", ["-C", root, "add", "content"], { env: cleanGitEnv() }).status, 0);
-  refuses(
-    root,
-    ["--out-dir", "content"],
-    /holds 2 git-tracked file\(s\) \(content\/other\.md, content\/post\.md\)/
-  );
-  // Untracked build output is fine, and so is a dir that doesn't exist yet.
-  assert.equal(resolveOptions(parseArgs([]), {}, root).outDir, join(root, "dist"));
-  assert.equal(resolveOptions(parseArgs(["--out-dir", "new"]), {}, root).outDir, join(root, "new"));
+  withCleanGitEnv(() => {
+    refuses(
+      root,
+      ["--out-dir", "content"],
+      /holds 2 git-tracked file\(s\) \(content\/other\.md, content\/post\.md\)/
+    );
+    // Untracked build output is fine, and so is a dir that doesn't exist yet.
+    assert.equal(resolveOptions(parseArgs([]), {}, root).outDir, join(root, "dist"));
+    assert.equal(
+      resolveOptions(parseArgs(["--out-dir", "new"]), {}, root).outDir,
+      join(root, "new")
+    );
+  });
   rmSync(root, { recursive: true, force: true });
 });
 
