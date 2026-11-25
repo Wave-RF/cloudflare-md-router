@@ -31,9 +31,10 @@ sha=$(git rev-parse --verify --quiet "${1:-HEAD}^{commit}" 2>/dev/null) || {
 }
 
 # Nothing to review when the commit adds nothing beyond the base. No base
-# resolvable -> fail safe and check.
+# resolvable, or a base git can't walk -> fail safe and check.
 if base=$(bash "$(helper review-base.sh)" 2>/dev/null) \
-   && [ -z "$(git rev-list "${base}..${sha}" 2>/dev/null)" ]; then
+   && commits=$(git rev-list "${base}..${sha}" 2>/dev/null) \
+   && [ -z "$commits" ]; then
   exit 0
 fi
 

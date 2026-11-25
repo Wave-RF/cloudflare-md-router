@@ -33,6 +33,13 @@
 # .claude/settings.local.json allows, which could admit e.g. `python3`) and no
 # MCP servers (`--strict-mcp-config`). The project settings still supply the
 # hooks, including review-marker.sh; project agents and commands load as usual.
+# Allowed git diff/log/show can still run helper programs: a textconv driver
+# that a revision's .gitattributes assigns, diff.external, $GIT_EXTERNAL_DIFF.
+# So the session's git reads no global or system config, takes attributes from
+# the empty tree instead of the work tree (attr.tree), and has
+# $GIT_EXTERNAL_DIFF unset; --ext-diff and --textconv are denied. What's left
+# is this clone's own .git/config and .git/info/attributes, which no revision
+# can change.
 #
 # Prints the nested run's report, then the marker check for HEAD. Exits 0 when
 # every reviewer in scripts/pre-push-reviewers.sh has a marker for HEAD, 1 when
@@ -126,10 +133,14 @@ allowed=(
 # Deny wins over allow: no file-writing diff option, no edits, wherever they
 # appear; no `--watch` (gh pr checks / gh run view would block the unattended
 # run) and no `--web` (opens a browser on the host).
-denied=(Edit Write NotebookEdit "Bash(*--output*)" "Bash(*--watch*)" "Bash(*--web*)")
+denied=(Edit Write NotebookEdit "Bash(*--output*)" "Bash(*--watch*)" "Bash(*--web*)"
+  "Bash(*--ext-diff*)" "Bash(*--textconv*)")
+empty_tree=$(git hash-object -t tree /dev/null)
 
 echo "prepush-headless: running /prepush all in ${root} (headless Claude Code)…" >&2
-claude -p "/prepush all" \
+env -u GIT_EXTERNAL_DIFF GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=attr.tree GIT_CONFIG_VALUE_0="$empty_tree" \
+  claude -p "/prepush all" \
   --setting-sources project \
   --strict-mcp-config \
   --permission-mode dontAsk \
