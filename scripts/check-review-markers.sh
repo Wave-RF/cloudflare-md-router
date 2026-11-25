@@ -37,11 +37,18 @@ if base=$(bash "$(helper review-base.sh)" 2>/dev/null) \
   exit 0
 fi
 
-# Validate each name for filename-safety before building a marker path.
-reviewers=$(bash "$(helper pre-push-reviewers.sh)" 2>/dev/null | grep -E '^[A-Za-z0-9._-]+$')
-if [ -z "$reviewers" ]; then
-  echo "check-review-markers: scripts/pre-push-reviewers.sh produced no valid reviewer names (missing, unreadable, empty, or corrupt)." >&2
+# The list must come out whole: the helper succeeds, prints at least one name,
+# and every name is filename-safe (it becomes part of a marker path). Any bad
+# entry rejects the whole list, so a corrupt manifest can't quietly drop a
+# reviewer from the gate.
+corrupt() {
+  echo "check-review-markers: scripts/pre-push-reviewers.sh $1 — can't tell which reviews gate this push." >&2
   exit 2
+}
+reviewers=$(bash "$(helper pre-push-reviewers.sh)" 2>/dev/null) || corrupt "failed (missing, unreadable, or exited non-zero)"
+[ -n "$reviewers" ] || corrupt "printed no reviewer names"
+if bad=$(printf '%s\n' "$reviewers" | grep -vE '^[A-Za-z0-9._-]+$'); then
+  corrupt "printed an invalid reviewer name ($(printf '%s' "$bad" | head -n 1))"
 fi
 
 missing=0

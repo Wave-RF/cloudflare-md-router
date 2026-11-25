@@ -27,12 +27,18 @@
 # options (`rg --pre`, `git grep -O`), `--output` denied (git diff/log/show
 # would write files), no skip script (it mints markers). The PR's inline review
 # comments, which only `gh api` returns, are fetched HERE with fixed arguments
-# into tmp/ for the reviewers to Read.
+# into tmp/ for the reviewers to Read. `--allowedTools` ADDS to the allow rules
+# of every settings file loaded, so the session loads only this repo's checked-in
+# .claude/settings.json (`--setting-sources project`: no user or
+# .claude/settings.local.json allows, which could admit e.g. `python3`) and no
+# MCP servers (`--strict-mcp-config`). The project settings still supply the
+# hooks, including review-marker.sh; project agents and commands load as usual.
 #
 # Prints the nested run's report, then the marker check for HEAD. Exits 0 when
 # every reviewer in scripts/pre-push-reviewers.sh has a marker for HEAD, 1 when
 # some are missing (address the findings, commit, run again), 2 on a usage or
-# precondition error, 127 when the `claude` CLI isn't installed.
+# precondition error or a broken reviewer list, 127 when the `claude` CLI isn't
+# installed.
 
 set -uo pipefail
 
@@ -105,17 +111,21 @@ allowed=(
   "Bash(git rev-parse:*)" "Bash(git rev-list:*)" "Bash(git merge-base:*)"
   "Bash(git ls-files:*)" "Bash(git blame:*)" "Bash(git fetch --quiet origin main)"
   "Bash(gh pr view:*)" "Bash(gh pr checks:*)" "Bash(gh pr diff:*)" "Bash(gh pr list:*)"
-  "Bash(gh issue view:*)"
+  "Bash(gh issue view:*)" "Bash(gh run view:*)"
   "Bash(scripts/pre-push-reviewers.sh)" "Bash(scripts/review-base.sh)" "Bash(scripts/docs-prose.sh:*)"
   "Bash(bash scripts/pre-push-reviewers.sh)" "Bash(bash scripts/review-base.sh)"
   "Bash(bash scripts/docs-prose.sh:*)"
   "Bash(ls:*)" "Bash(wc:*)" "Bash(head:*)" "Bash(tail:*)" "Bash(cat:*)"
 )
-# Deny wins over allow: no file-writing diff option, no edits, wherever they appear.
-denied=(Edit Write NotebookEdit "Bash(*--output*)")
+# Deny wins over allow: no file-writing diff option, no edits, wherever they
+# appear; no `--watch` (gh pr checks / gh run view would block the unattended
+# run) and no `--web` (opens a browser on the host).
+denied=(Edit Write NotebookEdit "Bash(*--output*)" "Bash(*--watch*)" "Bash(*--web*)")
 
 echo "prepush-headless: running /prepush all in ${root} (headless Claude Code)…" >&2
 claude -p "/prepush all" \
+  --setting-sources project \
+  --strict-mcp-config \
   --permission-mode dontAsk \
   --allowedTools "${allowed[@]}" \
   --disallowedTools "${denied[@]}" \
@@ -127,12 +137,27 @@ if [ "$claude_status" != 0 ]; then
 fi
 
 echo >&2
-if missing=$(bash scripts/check-review-markers.sh HEAD); then
-  echo "✅ prepush-headless: every pre-push reviewer has a marker for HEAD $(git rev-parse --short=8 HEAD)." >&2
-  ls tmp/*-passed-"$(git rev-parse HEAD)" 2>/dev/null | sed 's/^/    /' >&2
-  exit 0
-fi
-echo "🛑 prepush-headless: still missing for HEAD $(git rev-parse --short=8 HEAD):" >&2
-printf '%s\n' "$missing" >&2
-echo "Address the findings above, commit, and run this again." >&2
-exit 1
+head_sha=$(git rev-parse HEAD)
+missing=$(bash scripts/check-review-markers.sh HEAD)
+check_status=$?
+case "$check_status" in
+  0)
+    echo "✅ prepush-headless: every pre-push reviewer has a marker for HEAD ${head_sha:0:8}." >&2
+    for marker in tmp/*-passed-"$head_sha"; do
+      [ -e "$marker" ] && echo "    $marker" >&2
+    done
+    exit 0
+    ;;
+  1)
+    echo "🛑 prepush-headless: still missing for HEAD ${head_sha:0:8}:" >&2
+    printf '%s\n' "$missing" >&2
+    echo "Address the findings above, commit, and run this again." >&2
+    exit 1
+    ;;
+  *)
+    # check-review-markers.sh already said why (on stderr). Another review run
+    # won't help: the reviewer list itself needs fixing.
+    echo "🛑 prepush-headless: can't tell which reviewers gate HEAD ${head_sha:0:8}: fix scripts/pre-push-reviewers.sh, then run this again." >&2
+    exit 2
+    ;;
+esac
