@@ -132,6 +132,9 @@ export default createMdRouter({
 By default the worker also serves markdown to known crawler User-Agents, which helps crawlers that don't send `Accept: text/markdown`. Some site owners would rather negotiate on `Accept` alone, so that no request is answered differently based on who it claims to be (search engines call serving crawlers different content "cloaking"). Pass `botUserAgents: false` to do that:
 
 ```ts
+// worker/index.ts
+import { createMdRouter } from "@wave-rf/cloudflare-md-router";
+
 export default createMdRouter({ botUserAgents: false });
 ```
 
