@@ -81,7 +81,7 @@ Note the CLI `--plugins` override drops the plugin options in `.releaserc.json` 
 
    ```sh
    npm login
-   npm pack --dry-run        # should list only src/, README.md, LICENSE, package.json
+   npm pack --dry-run        # should list only src/, bin/, README.md, LICENSE, package.json
    npm publish --access public
    ```
 

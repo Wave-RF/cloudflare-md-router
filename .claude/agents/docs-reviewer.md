@@ -11,8 +11,8 @@ You are reviewing this package's **documentation** — the prose itself (accurac
 
 The orchestrator passes a scope, which decides whether you GATE the push or just advise:
 
-- **Gating mode** — scope is **empty / default** (the branch's changes vs `main`). The mandatory pre-push docs review, run in parallel with the other reviewers. You **end with a `VERDICT:` line** (see §Verdict). On `ship_it`, the SubagentStop hook `.claude/hooks/review-marker.sh` writes `tmp/docs-reviewer-passed-<HEAD-sha>`, which `.claude/hooks/agent-bash-gate.sh` requires before the push.
-- **Advisory mode** — scope is an explicit **path/glob** or **`all`** (an ad-hoc `/docs-review <path>` audit). Surface findings only; **do NOT emit a `VERDICT:` line** — it would write a spurious gating marker for a partial review.
+- **Gating mode** — scope is **empty / default** (the branch's changes vs the review base, `scripts/review-base.sh`: `origin/main`, else `main`). The mandatory pre-push docs review, run in parallel with the other reviewers. You **end with a `VERDICT:` line** (see §Verdict). On `ship_it`, the SubagentStop hook `.claude/hooks/review-marker.sh` writes `tmp/docs-reviewer-passed-<HEAD-sha>`, which `.claude/hooks/agent-bash-gate.sh` requires before the push.
+- **Advisory mode** — scope is an explicit **path/glob** or **`all`** (an ad-hoc audit: the orchestrator invokes you with that scope). Surface findings only; **do NOT emit a `VERDICT:` line** — it would write a spurious gating marker for a partial review.
 
 ## Source of truth
 
@@ -35,8 +35,8 @@ Commands: `scripts/docs-prose.sh all` (full reading list) · `scripts/docs-prose
 
 1. Read the rubric + `AGENTS.md` §Key Invariants / §Documentation Sync.
 2. Resolve scope; read the docs per the strategy above.
-3. **Accuracy vs. code** *(highest value)* — for each concrete claim, cross-check the source and **cite what you checked against**: `src/worker.ts` for behavior (the routing branches, `MdRouterOptions`, the defaults, the `Link`-header rules), `src/bots.ts` for the actual bot list in `LLM_BOT_UA`, `src/index.ts` for what's exported, `package.json` for the install name / `exports` subpaths / `peerDependencies` / `engines`. Pay special attention to: the README's behavior table vs the actual branching; the bot list vs the regex literal; the `wrangler.jsonc` example (`ASSETS` binding + `run_worker_first`); and whether the install snippet uses the **npm name** `@wave-rf/cloudflare-md-router` (not the old `github:` install).
-4. **Code↔docs sync** *(gating mode)* — diff the branch (`git diff --name-only main...HEAD`) and walk the changed code against §Documentation Sync. A changed/added `MdRouterOptions` option, export, default, the bot list, or the wrangler contract with **no** corresponding `README.md`/`src/` JSDoc update is a `[MUST]` (missing doc-sync), even when no `.md` file changed. Grep the identifiers you touched across the docs to catch staleness.
+3. **Accuracy vs. code** *(highest value)* — for each concrete claim, cross-check the source and **cite what you checked against**: `src/worker.ts` for behavior (the routing branches, `MdRouterOptions`, the defaults, the `Link`-header rules), `src/bots.ts` for the actual bot list in `LLM_BOT_UA`, `src/index.ts` for what's exported, `package.json` for the install name / `exports` subpaths / `peerDependencies` / `engines`. Pay special attention to: the README's behavior table vs the actual branching; the bot list vs the regex literal; the Dev loop table vs `bin/lib.mjs`; the `wrangler.jsonc` example (`ASSETS` binding + `run_worker_first`); and whether the install snippet uses the **npm name** `@wave-rf/cloudflare-md-router` (not the old `github:` install).
+4. **Code↔docs sync** *(gating mode)* — diff the branch (`scripts/review-base.sh` prints the base, then `git diff --name-only <base>...HEAD`) and walk the changed code against §Documentation Sync. A changed/added `MdRouterOptions` option, export, default, the bot list, or the wrangler contract with **no** corresponding `README.md`/`src/` JSDoc update is a `[MUST]` (missing doc-sync), even when no `.md` file changed. Grep the identifiers you touched across the docs to catch staleness.
 5. **Runnable examples → clarity → completeness → consistency**, per the rubric.
 6. Apply the noise filter; tag each surviving finding `[MUST]`/`[SHOULD]`/`[MAY]`.
 

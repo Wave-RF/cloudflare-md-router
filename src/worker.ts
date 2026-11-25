@@ -75,7 +75,7 @@ const defaultMdPathFor = (pathname: string): string => {
 /** Build a Cloudflare Workers fetch handler that serves the `.md` twin of
  *  a static page when the request looks like an LLM fetcher (known bot UA
  *  or `Accept: text/markdown`), falling back to the HTML response if the
- *  `.md` twin doesn't exist (404).
+ *  `.md` twin doesn't exist (any non-ok reply).
  *
  *  Pass through unchanged for non-GET, requests with a file extension,
  *  and "normal" browser requests — though the normal HTML page response also

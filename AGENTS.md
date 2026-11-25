@@ -20,16 +20,16 @@ A tiny, **pure-ESM** Cloudflare Worker for **request-time content negotiation** 
 
 There is **no build step**: the package ships **raw TypeScript** — `src/index.ts` (the public re-export barrel), `src/worker.ts` (the whole implementation), and `src/bots.ts` (the crawler regex). Consumers bundle the `.ts` with Wrangler/esbuild (`exports` point straight at the `.ts` files; `tsconfig` uses `allowImportingTsExtensions` + `verbatimModuleSyntax`). The Worker code runs on the **Workers runtime**, not Node — no Node built-ins. The one exception is the Node-only `bin/` dev CLI (`cloudflare-md-router dev`), which ships too but is never imported by `src/` (invariant 8).
 
-`createMdRouter(options)` returns a Workers `ExportedHandler`; `mdRouter` (and the default export) is the zero-config instance. `LLM_BOT_UA` is the default crawler regex, exported so consumers can compose their own.
+`createMdRouter(options)` returns a Workers `ExportedHandler`; `mdRouter` (and the default export) is the zero-config instance. `createMdResponder(options)` returns the same logic as a plain `(request, env) => Promise<Response>` (`MdResponder`) for use inside a larger Worker. `LLM_BOT_UA` is the default crawler regex, exported so consumers can compose their own.
 
 ## Key Invariants
 
 What must stay true. Preserve the named invariant when you touch its code. The Worker's routing is covered by `test/worker.test.mjs` (stub `ASSETS`, stub `HTMLRewriter`) — if you add non-trivial routing logic, adding a test (a stub `ASSETS` Fetcher) is encouraged.
 
-1. **Pass-through is verbatim.** Non-GET requests, any pathname matching the file-extension guard (`/\.[a-zA-Z0-9]+$/`), and "normal" requests that don't want markdown are forwarded to `env.ASSETS.fetch(request)` unchanged. The worker must never alter a pass-through **body**, and apart from the opt-in `Link` header it must not alter status or other headers.
+1. **Pass-through is verbatim.** Non-GET requests and any pathname matching the file-extension guard (`/\.[a-zA-Z0-9]+$/`) are forwarded to `env.ASSETS.fetch(request)` and returned untouched. "Normal" requests that don't want markdown are forwarded unchanged too, and their response changes only in the documented, option-controlled ways: the `Link` header(s) (`advertiseTwin`, on by default; `advertiseLlmsTxt`), `Vary: Accept` (`vary`), and the `og:image`/`twitter:image` rewrite on a non-canonical host (`canonicalOrigin`). Beyond those, the worker must never alter a pass-through body, status or header.
 2. **Markdown-routing trigger** = `acceptTokens.some(tok => accept.includes(tok)) || botUserAgents.test(ua)`, where `acceptTokens` **always** contains `"text/markdown"` (consumer tokens via `acceptMarkdown` are *added*, never replace it) and `botUserAgents` defaults to the **case-insensitive** `LLM_BOT_UA`; passing `false` turns UA routing off entirely (the trigger then reduces to the `Accept` match; the `Link` header and everything else are unchanged). Don't drop the always-on `text/markdown`, make the UA match case-sensitive, over-match, or let `false` fall back to the default.
 3. **HTML fallback on a missing twin.** When markdown is wanted, fetch `mdPathFor(pathname)`; on any **non-ok** reply fall back to `env.ASSETS.fetch(request)` (the *original* request) — never surface the error, never loop, never re-fetch the `.md` path. An ok twin is returned with `Content-Type: text/markdown; charset=utf-8`.
-4. **The `Link` header is opt-in and narrowly scoped.** Appended **only** when `advertiseTwin` (default `true`; with `checkTwin`, also only if the twin fetch is `ok`) AND `response.status === 200` AND the `Content-Type`'s first media-type token (lowercased, `;`-params stripped) is exactly `text/html`. It is added via `new Response(response.body, response)` (an asset response's headers are immutable) and its value percent-encodes **each path segment** of `mdPathFor(pathname)` then wraps it `<…>; rel="alternate"; type="text/markdown"`. The per-segment `encodeURIComponent` is the guard against header injection / a malformed `Link` — don't weaken it, and don't add the header to the `.md` or pass-through responses.
+4. **The `Link` header is on by default and narrowly scoped.** Appended **only** when `advertiseTwin` (default `true`; with `checkTwin`, also only if the twin fetch is `ok`) AND `response.status === 200` AND the `Content-Type`'s first media-type token (lowercased, `;`-params stripped) is exactly `text/html`. It is added via `new Response(response.body, response)` (an asset response's headers are immutable) and its value percent-encodes **each path segment** of `mdPathFor(pathname)` then wraps it `<…>; rel="alternate"; type="text/markdown"`. The `llms.txt` `Link` (`advertiseLlmsTxt`) follows the same `200 text/html` rule, independent of `advertiseTwin`. The per-segment `encodeURIComponent` is the guard against header injection / a malformed `Link` — don't weaken it, and don't add the header to the `.md` or pass-through responses.
 5. **`mdPathFor` default contract** — strip a trailing slash and append `.md`; the special case `/` → `/index.md`. A custom `mdPathFor` is consumer-supplied; the result is resolved against the request origin.
 6. **The `ASSETS` Fetcher binding + `run_worker_first`** — the worker needs an `ASSETS` binding (`MdRouterEnv.ASSETS: Fetcher`) and, in the consumer's `wrangler.jsonc`, `assets.run_worker_first` set so the worker runs **first for page routes**, before Cloudflare's static-asset matcher (otherwise it only runs on 404s): either `true` (every request; simplest) or an array of route patterns (`["/*", "!/_astro/*", "!/assets/*"]`: `*` matches deeply, a `!` pattern excludes and wins over a non-negated match, order is irrelevant, max 100 entries) that keeps asset requests off the Worker. Requests that don't match run asset-first and never reach the router, so the array must cover every page route. This is a documented contract — preserve it in code and docs.
 7. **Bounded fetches** — at most two `ASSETS.fetch` calls per request (the twin then the HTML fallback, or the page then the `checkTwin` lookup). No recursive or unbounded fetching. The UA regex runs on attacker-controlled input, so keep it **linear** (no catastrophic backtracking / ReDoS).
@@ -44,13 +44,13 @@ pnpm run typecheck      # tsc --noEmit (strict)
 pnpm run check          # biome check . (lint + format check) — the CI gate
 pnpm run format         # biome format --write . (auto-fix formatting)
 pnpm run lint           # biome lint .
-pnpm run test           # node --test (the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test that asserts no child outlives the CLI)
+pnpm run test           # node --test (the Worker's routing against a stub ASSETS, plus the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test that asserts no child outlives the CLI)
 pnpm run verify         # biome check . && pnpm run typecheck && pnpm run test && pnpm run check:release, then write the tree marker
 ```
 
 **Dependencies are locked and aged.** `pnpm-lock.yaml` is committed; CI and the release build use `pnpm install --frozen-lockfile`, so they get exactly the tree that was tested (the lockfile doesn't reach consumers, who resolve with their own). `pnpm-workspace.yaml` sets `minimumReleaseAge: 10080` (7 days, `@wave-rf/*` and `@wavehouse/*` exempt) and Dependabot has a matching 7-day `cooldown`. Third-party GitHub Actions are pinned by commit SHA with a `# vX.Y.Z` comment.
 
-The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `tsc --noEmit` + those. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.
+The tests are `node --test` over `test/`: `worker.test.mjs` (the routing, with a stub `ASSETS` and `HTMLRewriter`), `lib.test.mjs` and `smoke.test.mjs` (the `bin/` CLI); CI is Biome + `tsc --noEmit` + those + the release-config check. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.
 
 ## Local-First Validation
 
@@ -59,7 +59,9 @@ The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `t
 Enforced via git hooks (installed by `pnpm run setup`; apply to humans and agents alike):
 
 - **`.githooks/pre-commit`** runs `pnpm run verify` unless the current tree's marker already exists (cached).
-- **`.githooks/pre-push`** requires `tmp/verify-passed-tree-<TREE>` for each pushed commit's tree. Tree-keyed, so `verify → commit → push` needs no re-run when the tree is unchanged. From a Claude Code shell it also checks the pre-push review markers (§Agent PR Discipline). Skipped on CI (`$CI` set).
+- **`.githooks/pre-push`** requires `tmp/verify-passed-tree-<TREE>` for each pushed commit's tree. Tree-keyed, so `verify → commit → push` needs no re-run when the tree is unchanged. From a Claude Code shell it also checks the pre-push review markers (§Agent PR Discipline).
+
+CI never installs the hooks (it runs the checks itself), and `scripts/ci-marker.sh write` is a no-op when `$CI` is set.
 
 Bypass (`--no-verify`) is for human WIP only; agents must not (§Don't bypass the gates).
 
@@ -155,7 +157,7 @@ Every change to the public surface updates its docs in the same PR:
 | Change | Files to update |
 | ------ | --------------- |
 | Add/modify an `MdRouterOptions` option or its default | `src/worker.ts` (the type + JSDoc), `README.md` (Customizing section + behavior table) |
-| Add/modify an export or a subpath (`createMdRouter`, `mdRouter`, `LLM_BOT_UA`, `./worker`, `./bots`) | `src/index.ts`/`src/worker.ts` JSDoc, `package.json` `exports`, `README.md` (Use) |
+| Add/modify an export or a subpath (`createMdRouter`, `createMdResponder`, `mdRouter`, `LLM_BOT_UA`, the `MdRouter*`/`MdResponder` types, `./worker`, `./bots`) | `src/index.ts`/`src/worker.ts` JSDoc, `package.json` `exports`, `README.md` (Use / Customizing) |
 | Change a routing invariant (pass-through rules, fallback, the `Link` header) | `README.md` (behavior table + the relevant note), the `src/` JSDoc |
 | Change the `LLM_BOT_UA` bot list | `src/bots.ts`, `README.md` (the enumerated bot list) |
 | Change the package name / `exports` / `engines` / peer deps / the `wrangler.jsonc` contract | `README.md` (Install + Use), `package.json` |
@@ -174,10 +176,10 @@ Each work tree has its own `tmp/`, so run `pnpm run verify` and the review in th
 
 ```text
 src/index.ts            → public re-export barrel (the API entry; ships)
-src/worker.ts           → the whole implementation: createMdRouter + mdRouter + the MdRouter* types (ships)
+src/worker.ts           → the whole implementation: createMdRouter + createMdResponder + mdRouter + the MdRouter*/MdResponder types (ships)
 src/bots.ts             → LLM_BOT_UA, the default crawler User-Agent regex (ships)
 bin/cli.mjs, dev.mjs, lib.mjs → the `cloudflare-md-router dev` CLI (ships; plain Node ESM, Node built-ins only; Node, NOT Workers — `src/` must never import `bin/`)
-test/                   → node --test suite for bin/ (pure helpers + fixture-site smoke test, run under npm and pnpm; no network)
+test/                   → node --test: worker.test.mjs (routing, stub ASSETS) + the bin/ suite (pure helpers + fixture-site smoke test, run under npm and pnpm); no network
 tsconfig.json           → strict, ESNext, Bundler resolution, allowImportingTsExtensions (the typecheck gate)
 scripts/                → shell + node tooling (PR-title lint, reviewer manifest, review base + marker check, headless /prepush, markers, release-config check, repo setup)
 .githooks/              → universal pre-commit + pre-push (installed via pnpm run setup)
@@ -192,4 +194,4 @@ scripts/                → shell + node tooling (PR-title lint, reviewer manife
 - **`pr-title.yml`** — Conventional-Commit title check (required); skips the check for `dependabot[bot]`.
 - **`publish-npm.yml`** — release on merge: every push to `main` runs `verify`, then semantic-release, which tags `vX.Y.Z`, publishes to npm via OIDC with provenance, and creates the GitHub Release — or does nothing if no commit warrants a release. ONE file (npm allows one trusted-publisher filename per package).
 - **`dependabot.yml` + `dependabot-automerge.yml`** — weekly grouped dep/action bumps; patch/minor auto-merge after CI, major held for review.
-- Third-party actions are pinned to commit SHAs with version comments where verified (`dependabot/fetch-metadata` is on a major tag pending a SHA pin).
+- Third-party actions are pinned to commit SHAs with a `# vX.Y.Z` comment.
