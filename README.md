@@ -13,7 +13,7 @@ If you're building a docs site that already emits a per-page raw-markdown twin (
 | Anything with a file extension (`.css`, `.png`, `.md`, …) | Pass-through to ASSETS |
 | Non-GET                                        | Pass-through to ASSETS |
 | `Accept: text/markdown`                        | `<path>.md` (HTML fallback when the twin is not ok; served as `text/markdown; charset=utf-8`) |
-| `User-Agent` matches a known LLM bot           | `<path>.md` (HTML fallback when the twin is not ok; served as `text/markdown; charset=utf-8`) |
+| `User-Agent` matches a known LLM bot (unless `botUserAgents: false`) | `<path>.md` (HTML fallback when the twin is not ok; served as `text/markdown; charset=utf-8`) |
 | Everything else                                | HTML page — plus a `Link` header advertising its `.md` twin |
 
 On the normal HTML page response, the worker also adds an [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) `Link` header so an agent can discover the markdown twin from a plain GET, without sniffing the User-Agent or guessing the right `Accept`:
@@ -68,11 +68,28 @@ Configure your `wrangler.jsonc` with an ASSETS binding pointing at your built st
 }
 ```
 
-`run_worker_first` is required so the worker sees the request before Cloudflare's static-asset matcher does — otherwise the worker only ever runs on 404s.
+`run_worker_first: true` is the simplest setting: the worker sees every request before Cloudflare's static-asset matcher does. (Without it, the worker only ever runs on 404s.) The catch is that every JS, CSS and image request also invokes the Worker, only for the router to pass it through, and each invocation is billed and adds a little latency.
+
+For a typical static site, scope it to page routes instead. `run_worker_first` also accepts an array of route patterns ([Cloudflare docs](https://developers.cloudflare.com/workers/static-assets/binding/#run_worker_first)):
+
+```jsonc
+"assets": {
+  "directory": "./dist",
+  "binding": "ASSETS",
+  "not_found_handling": "404-page",
+  "html_handling": "drop-trailing-slash",
+  "run_worker_first": ["/*", "!/_astro/*", "!/assets/*"]
+}
+```
+
+The Worker runs first when a pattern matches and no `!` pattern does; `*` matches deeply (across `/`), a `!` pattern always wins over a non-negated one, and the order doesn't matter. Everything else is served by the asset matcher without invoking the Worker. At most 100 entries are allowed. Adjust the excluded directories to wherever your build puts hashed assets (`/_astro/*` for Astro, `/assets/*` for Vite, and so on). Two things to know:
+
+- A request that matches no pattern never reaches the router, so the array must cover every page route (`"/*"` does).
+- Don't exclude by extension with something like `"!/*.*"`: `*` also matches across directories, so it would also exclude any page under a path segment containing a dot (`/docs/v1.2/page`). The router already passes file-extension requests through verbatim, so excluding asset directories is enough.
 
 ## Customizing
 
-Use `createMdRouter()` if you need to extend the bot list, change the `.md` path mapping, or add other Accept tokens:
+Use `createMdRouter()` if you need to extend the bot list, turn User-Agent routing off, change the `.md` path mapping, or add other Accept tokens:
 
 ```ts
 // worker/index.ts
@@ -81,6 +98,9 @@ import { createMdRouter, LLM_BOT_UA } from "@wave-rf/cloudflare-md-router";
 export default createMdRouter({
   // Add your own bots:
   botUserAgents: new RegExp(LLM_BOT_UA.source + "|mybot", "i"),
+
+  // Or serve markdown on an explicit `Accept` only, never by User-Agent (see below).
+  // botUserAgents: false,
 
   // Treat `Accept: text/x-markdown` as markdown too:
   acceptMarkdown: ["text/x-markdown"],
@@ -105,6 +125,16 @@ export default createMdRouter({
   canonicalOrigin: "https://example.com",
 });
 ```
+
+### Accept-only negotiation (`botUserAgents: false`)
+
+By default the worker also serves markdown to known crawler User-Agents, which helps crawlers that don't send `Accept: text/markdown`. Some site owners would rather negotiate on `Accept` alone, so that no request is answered differently based on who it claims to be (search engines call serving crawlers different content "cloaking"). Pass `botUserAgents: false` to do that:
+
+```ts
+export default createMdRouter({ botUserAgents: false });
+```
+
+Markdown is then served only when the request asks for it: `Accept: text/markdown`, or one of your `acceptMarkdown` tokens. Everything else gets the HTML page, still with the `Link` header advertising the `.md` twin, so an agent can find it from a plain GET. The trade-off: crawlers that don't negotiate and don't follow the `Link` header will receive HTML.
 
 To run the negotiation inside a larger Worker, use `createMdResponder(options)`, which returns a plain `(request, env) => Promise<Response>`:
 

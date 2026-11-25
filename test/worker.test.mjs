@@ -165,3 +165,42 @@ test("a twin is served as text/markdown, and any non-ok twin reply falls back to
     assert.equal(await res.text(), "<p>a</p>", `status ${status}`);
   }
 });
+
+test("a bot User-Agent gets the twin by default; botUserAgents: false routes on Accept only", async () => {
+  const files = { "/a": html("<p>a</p>"), "/a.md": { body: "# a", type: "text/markdown" } };
+  const env = () => ({ ASSETS: assets(files) });
+  const bot = { "user-agent": "Mozilla/5.0 (compatible; GPTBot/1.1)" };
+
+  const byDefault = await createMdRouter().fetch(get("https://x.test/a", bot), env());
+  assert.equal(await byDefault.text(), "# a");
+
+  const off = await createMdRouter({ botUserAgents: false }).fetch(
+    get("https://x.test/a", bot),
+    env()
+  );
+  assert.equal(await off.text(), "<p>a</p>");
+  assert.equal(links(off), '</a.md>; rel="alternate"; type="text/markdown"');
+
+  for (const options of [{}, { botUserAgents: false }]) {
+    const res = await createMdRouter(options).fetch(
+      get("https://x.test/a", { ...bot, accept: "text/markdown" }),
+      env()
+    );
+    assert.equal(await res.text(), "# a", JSON.stringify(options));
+    assert.equal(res.headers.get("content-type"), "text/markdown; charset=utf-8");
+  }
+
+  const token = await createMdRouter({
+    botUserAgents: false,
+    acceptMarkdown: ["text/x-markdown"],
+  }).fetch(get("https://x.test/a", { accept: "text/x-markdown" }), env());
+  assert.equal(await token.text(), "# a");
+});
+
+test("with botUserAgents: false a missing twin still falls back to HTML on an Accept match", async () => {
+  const res = await createMdRouter({ botUserAgents: false }).fetch(
+    get("https://x.test/b", { accept: "text/markdown" }),
+    { ASSETS: assets({ "/b": html("<p>b</p>") }) }
+  );
+  assert.equal(await res.text(), "<p>b</p>");
+});

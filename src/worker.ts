@@ -5,8 +5,13 @@ export interface MdRouterEnv {
 }
 
 export interface MdRouterOptions {
-  /** Override the default LLM-bot User-Agent matcher. Default: {@link LLM_BOT_UA}. */
-  botUserAgents?: RegExp;
+  /** Override the default LLM-bot User-Agent matcher, or pass `false` to turn
+   *  User-Agent routing off entirely so markdown is served only on an explicit
+   *  `Accept` match (`text/markdown` plus any {@link MdRouterOptions.acceptMarkdown}
+   *  tokens). With `false` the `Link` header and everything else behave as
+   *  usual, so agents can still discover the twin from a plain GET. Keep a custom
+   *  regex linear: it runs on attacker-controlled input. Default: {@link LLM_BOT_UA}. */
+  botUserAgents?: RegExp | false;
   /** Map a request URL pathname (e.g. `/foo/bar/`) to its `.md` twin path
    *  (e.g. `/foo/bar.md`). Default strips a trailing slash and appends
    *  `.md`; the special case for `/` returns `/index.md`. */
@@ -80,7 +85,10 @@ const defaultMdPathFor = (pathname: string): string => {
  *  {@link MdRouterOptions.vary} so shared caches don't cross-serve the two
  *  representations.
  *
- *  Requires an `ASSETS` Fetcher binding in your `wrangler.jsonc`:
+ *  Requires an `ASSETS` Fetcher binding in your `wrangler.jsonc`, and the Worker
+ *  must run before the static-asset matcher for page routes (`run_worker_first`:
+ *  `true` for every request, or an array of route patterns such as the one below
+ *  that keeps asset requests off the Worker):
  *  ```jsonc
  *  {
  *    "main": "worker/index.ts",
@@ -89,7 +97,7 @@ const defaultMdPathFor = (pathname: string): string => {
  *      "binding": "ASSETS",
  *      "not_found_handling": "404-page",
  *      "html_handling": "drop-trailing-slash",
- *      "run_worker_first": true
+ *      "run_worker_first": ["/*", "!/_astro/*", "!/assets/*"]
  *    }
  *  }
  *  ```
@@ -182,7 +190,8 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
 
     const accept = request.headers.get("Accept") ?? "";
     const ua = request.headers.get("User-Agent") ?? "";
-    const wantsMarkdown = acceptTokens.some((tok) => accept.includes(tok)) || botUa.test(ua);
+    const wantsMarkdown =
+      acceptTokens.some((tok) => accept.includes(tok)) || (botUa !== false && botUa.test(ua));
     const mdPath = mdPathFor(url.pathname);
     const fetchTwin = () => env.ASSETS.fetch(new Request(new URL(mdPath, url.origin), request));
 
