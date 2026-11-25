@@ -112,9 +112,10 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
   };
 }
 
-/** Like {@link createMdRouter}, but returns a plain `(request, env) => Response`
- *  function so it can be called from inside a larger Worker, for example as the
- *  fallthrough after your own routes:
+/** Like {@link createMdRouter}, but returns a plain
+ *  `(request, env) => Promise<Response>` function ({@link MdResponder}) so it
+ *  can be called from inside a larger Worker, for example as the fallthrough
+ *  after your own routes:
  *
  *  ```ts
  *  const respond = createMdResponder({ vary: true });

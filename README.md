@@ -109,7 +109,8 @@ export default createMdRouter({
   mdPathFor: (pathname) => `/markdown${pathname.replace(/\/$/, "")}.md`,
 
   // Don't advertise the `.md` twin via a `Link` header (default: true).
-  advertiseTwin: false,
+  // Left commented out here: it would also make `checkTwin` below a no-op.
+  // advertiseTwin: false,
 
   // Add `Vary: Accept` to negotiated responses so a shared cache doesn't
   // cross-serve the HTML and markdown representations (default: false).
