@@ -129,10 +129,12 @@ Human pushes from your own shell aren't review-gated. Other agents (Copilot, Cur
 **From a session that didn't start in this repo** (or with no interactive session at all), run the review in a fresh headless Claude Code process started at the work tree's root, so the real agents, `/prepush` and hooks load:
 
 ```bash
-scripts/prepush-headless.sh          # /prepush; `all` runs every reviewer
+scripts/prepush-headless.sh          # runs /prepush all there, then checks the markers for HEAD
 ```
 
-It runs `claude -p "/prepush"` from the work tree root with read-only tools (`--permission-mode dontAsk`, an `--allowedTools` list, no `Edit`/`Write`), reports each reviewer's findings, then checks the markers for HEAD: exit 0 when all are present, 1 when some are missing. It reviews and stops; you fix findings, commit, and run it again until it exits 0. It needs the `claude` CLI and fails with a clear message without it. Don't emulate the reviewers with general-purpose agents: no marker, and the push is blocked.
+It runs `claude -p "/prepush all"` from the work tree root, reports each reviewer's findings, then checks the markers for HEAD: exit 0 when all are present, 1 when some are missing. It reviews and stops; you fix findings, commit, and run it again until it exits 0. It needs the `claude` CLI and fails with a clear message without it. Don't emulate the reviewers with general-purpose agents: no marker, and the push is blocked.
+
+The nested session runs unattended and reads untrusted text (PR comments, bot reviews, the diff), so its tools are read-only in fact: `--permission-mode dontAsk`, an `--allowedTools` list of git/gh read commands and the review-list scripts, `--output` denied, no `Edit`/`Write`, no `gh api` (an endpoint rule would also admit POSTs, file uploads and approvals) and no skip script. The script fetches the PR's inline review comments itself, with fixed arguments, into `tmp/` for the reviewers to read. It runs every reviewer; to skip one that is genuinely out of lane, run `scripts/skip-pre-push-review.sh` yourself.
 
 ### Adding a pre-push reviewer
 
