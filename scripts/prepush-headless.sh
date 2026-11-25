@@ -68,6 +68,7 @@ fi
 git fetch --quiet origin main 2>/dev/null || true
 
 headless_note='You are running /prepush headlessly on behalf of another agent, which will fix findings itself.
+This script already ran `git fetch origin main`, so origin/main is current.
 Do steps 1-4 of /prepush exactly once: launch every reviewer you keep in parallel with the Agent tool,
 subagent_type set to the reviewer name (never a general-purpose stand-in: only the real reviewer type
 gets its marker written), and record each skip with scripts/skip-pre-push-review.sh. Do NOT edit files,
@@ -83,7 +84,11 @@ allowed=(
   "Bash(git rev-parse:*)" "Bash(git rev-list:*)" "Bash(git merge-base:*)"
   "Bash(git ls-files:*)" "Bash(git branch:*)" "Bash(git blame:*)" "Bash(git grep:*)"
   "Bash(gh pr view:*)" "Bash(gh pr checks:*)" "Bash(gh pr diff:*)" "Bash(gh pr list:*)"
-  "Bash(gh issue view:*)" "Bash(gh api repos/:*)"
+  "Bash(gh issue view:*)" "Bash(git fetch --quiet origin main)"
+  # Read endpoints the reviewer prompts name. `*` (not `:*`) so the pattern can
+  # continue straight into the path: `repos/:*` would need a space after `/`.
+  "Bash(gh api repos/*/pulls/*/comments*)" "Bash(gh api repos/*/pulls/*/reviews*)"
+  "Bash(gh api repos/*/issues/*/comments*)"
   "Bash(scripts/pre-push-reviewers.sh)" "Bash(scripts/review-base.sh)"
   "Bash(scripts/docs-prose.sh:*)" "Bash(scripts/skip-pre-push-review.sh:*)"
   "Bash(bash scripts/pre-push-reviewers.sh)" "Bash(bash scripts/review-base.sh)"
