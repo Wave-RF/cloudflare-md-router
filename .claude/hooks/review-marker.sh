@@ -50,7 +50,18 @@ if ! agent_type=$(printf '%s' "$input" | jq -r '.agent_type // empty' 2>/dev/nul
 fi
 [ -z "$agent_type" ] && exit 0
 
-cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
+# Write into the work tree the session is actually in (the reviewer reviewed
+# that HEAD): the payload's `cwd` when it is this repo or one of its git
+# worktrees, else $CLAUDE_PROJECT_DIR. Each work tree has its own tmp/, and the
+# push checks the one being pushed. Keep in sync with agent-bash-gate.sh.
+project_dir="${CLAUDE_PROJECT_DIR:-.}"
+hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
+if [ -n "$hook_cwd" ] \
+   && cwd_common=$(git -C "$hook_cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+   && [ "$cwd_common" = "$(git -C "$project_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
+  project_dir=$(git -C "$hook_cwd" rev-parse --show-toplevel)
+fi
+cd "$project_dir" 2>/dev/null || exit 0
 
 # Resolve the gating reviewers from the single source of truth. Validate each
 # name for filename-safety (it becomes part of a marker filename); a malformed
@@ -63,7 +74,15 @@ is_reviewer=0
 for r in $reviewers; do
   [ "$r" = "$agent_type" ] && { is_reviewer=1; break; }
 done
-[ "$is_reviewer" = 1 ] || exit 0
+if [ "$is_reviewer" != 1 ]; then
+  # A non-reviewer subagent that still emits a verdict is almost always a
+  # reviewer emulated by a general-purpose agent: say why it earns no marker.
+  if printf '%s' "$input" | jq -r '.last_assistant_message // empty' 2>/dev/null \
+     | grep -qiE '^[[:space:]]*VERDICT:[[:space:]]*(ship_it|iterate|block)[[:space:]]*$'; then
+    echo "review-marker: '${agent_type}' returned a VERDICT line but isn't a reviewer in ${reviewers_script} — no marker. Launch the reviewer with subagent_type set to its name (or run scripts/prepush-headless.sh)." >&2
+  fi
+  exit 0
+fi
 
 if ! response=$(printf '%s' "$input" | jq -r '.last_assistant_message // empty' 2>/dev/null); then
   echo "review-marker: malformed SubagentStop payload; could not parse .last_assistant_message — no marker written." >&2
@@ -93,6 +112,8 @@ if [ "$verdict" = "ship_it" ]; then
   else
     echo "review-marker: failed to write tmp/${agent_type}-passed-${head_sha:0:8} — no marker written." >&2
   fi
+elif [ -z "$verdict" ]; then
+  echo "review-marker: ${agent_type} ended without a parseable 'VERDICT: ship_it|iterate|block' line — no marker written." >&2
 fi
 
 # Writing the marker above is this hook's only job — it intentionally does NOT

@@ -22,12 +22,13 @@ pnpm run format      # auto-fix formatting
 pnpm run verify      # check + typecheck + tests + the release-config check together (the local gate; what the hooks run)
 ```
 
-Biome owns JS/TS/JSON style. Tests are `node --test` over `test/`, covering the `bin/` dev CLI; CI runs Biome + `tsc --noEmit` + `node --test` + the offline release-config check. The Worker's routing has no tests yet — if you add non-trivial routing logic, a test (a stub `ASSETS` Fetcher driving `createMdRouter()`) is encouraged. See [AGENTS.md §Key Invariants](AGENTS.md#key-invariants) for what must stay true (the verbatim pass-through, the markdown-routing trigger, the HTML-fallback-on-404, the opt-in `Link` header, the `wrangler.jsonc` contract).
+Biome owns JS/TS/JSON style. Tests are `node --test` over `test/`, covering the `bin/` dev CLI and the Worker's routing (`test/worker.test.mjs`, with a stub `ASSETS` Fetcher); CI runs Biome + `tsc --noEmit` + `node --test` + the offline release-config check. When you change routing logic, add a test there (a stub `ASSETS` Fetcher driving `createMdRouter()`). See [AGENTS.md §Key Invariants](AGENTS.md#key-invariants) for what must stay true (the verbatim pass-through, the markdown-routing trigger, the HTML fallback on a missing twin, the narrowly scoped `Link` header, the `wrangler.jsonc` contract).
 
 ## Pull requests
 
 - **Title must be [Conventional Commits](https://www.conventionalcommits.org/):** `<type>(scope): subject`, ≤ 72 chars, lowercase subject, no trailing period. Types: `feat fix docs refactor test chore ci deps build perf revert style`. A breaking change uses `feat!:` (or a `BREAKING CHANGE:` body footer). The title becomes the squash-merge commit and **drives the version bump** — check it with `scripts/lint-pr-title.sh "<title>"`.
 - Run `pnpm run verify` before pushing; the pre-push hook requires it.
+- **AI agents** also need the pre-push reviewers' markers before pushing a branch: run `/prepush` in a Claude Code session started in this repo (or a worktree of it), or `scripts/prepush-headless.sh`, which runs it in a headless `claude -p` from the work tree root when the session started elsewhere (Claude Code only loads the project's review agents and hooks from the directory it started in). The pre-push hook enforces this for pushes from a Claude Code shell; your own pushes aren't affected. Details: [AGENTS.md §Agent PR Discipline](AGENTS.md#agent-pr-discipline).
 - Update the `src/` JSDoc + `README.md` when you change the public surface — `MdRouterOptions` options, the exports, a default, the `LLM_BOT_UA` bot list, or the `wrangler.jsonc` contract (see [AGENTS.md §Documentation Sync](AGENTS.md#documentation-sync)). **Don't** hand-edit `CHANGELOG.md` — it is frozen history; release notes are generated from commit messages into GitHub Releases.
 - PRs merge via **squash**; required checks (`ci`, `pr-title`) must pass.
 

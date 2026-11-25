@@ -18,6 +18,11 @@
 
 set -uo pipefail
 
+cd "$(git rev-parse --show-toplevel)" 2>/dev/null || {
+  echo "skip-pre-push-review: not inside a git work tree." >&2
+  exit 2
+}
+
 name="${1:-}"
 shift 2>/dev/null || true
 reason="${*:-}"
@@ -41,12 +46,9 @@ head_sha=$(git rev-parse HEAD 2>/dev/null) || {
   exit 2
 }
 
-# Resolve the review base the same way the push gate does (local main, else
-# origin/main) for the advisory relevance check below.
-base=""
-for ref in main origin/main; do
-  if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then base="$ref"; break; fi
-done
+# The review base the push gate uses (scripts/review-base.sh: origin/main, else
+# main), for the advisory relevance check below.
+base=$(bash scripts/review-base.sh 2>/dev/null) || base=""
 
 # marker scheme: tmp/<reviewer>-passed-<HEAD> — keep in sync with
 # .claude/hooks/review-marker.sh and .claude/hooks/agent-bash-gate.sh.
@@ -64,8 +66,8 @@ case "$name" in
     ;;
   docs-reviewer)
     if { [ -x scripts/docs-prose.sh ] && [ -n "$(scripts/docs-prose.sh changed 2>/dev/null)" ]; } \
-       || { [ -n "$base" ] && git diff --name-only "${base}...HEAD" 2>/dev/null | grep -qE '^src/'; }; then
-      warn="docs prose or the src/ JSDoc API reference changed on this branch — a docs review is probably warranted"
+       || { [ -n "$base" ] && git diff --name-only "${base}...HEAD" 2>/dev/null | grep -qE '^(src|bin)/'; }; then
+      warn="docs prose, the src/ JSDoc API reference, or the bin/ dev CLI changed on this branch — a docs review is probably warranted"
     fi
     ;;
 esac

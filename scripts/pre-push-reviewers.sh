@@ -17,8 +17,9 @@
 # Order matters: a name here with no matching agent file blocks every push
 # until the agent exists. See AGENTS.md §"Adding a pre-push reviewer".
 #
-# Keep names filename-safe ([A-Za-z0-9._-]); consumers validate and silently
-# drop anything else, so a malformed entry disables that reviewer's gate.
+# Keep names filename-safe ([A-Za-z0-9._-]), one per line. The marker check
+# (scripts/check-review-markers.sh) rejects the whole list if any entry isn't,
+# so a malformed entry blocks every push until it's fixed.
 
 set -u
 

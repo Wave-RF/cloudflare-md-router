@@ -14,5 +14,12 @@ if scripts/ci-marker.sh has-marker 2>/dev/null; then
   exit 0
 fi
 
+# Run verify without git's hook environment. Git exports GIT_INDEX_FILE (the
+# index being committed) to hooks, and the tests run `git add` in throwaway
+# fixture repos: with that variable inherited, those adds wrote the fixture's
+# files into THIS index (and staged deletions of src/), so the commit silently
+# recorded the wrong tree. verify reads the working tree, not the index, and we
+# are already at the top level.
 # `pnpm run verify` writes the tree marker on success (its tail step).
-pnpm run verify || { echo "🛑 pre-commit: 'pnpm run verify' failed." >&2; exit 1; }
+env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE pnpm run verify \
+  || { echo "🛑 pre-commit: 'pnpm run verify' failed." >&2; exit 1; }

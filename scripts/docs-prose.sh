@@ -7,7 +7,7 @@
 #
 # Modes:
 #   docs-prose.sh all              every docs-prose file (the full reading list)
-#   docs-prose.sh changed [base]   docs-prose files changed vs base (default: main, else origin/main)
+#   docs-prose.sh changed [base]   docs-prose files changed vs base (default: scripts/review-base.sh — origin/main, else main)
 #   docs-prose.sh is-match <path>  exit 0 if <path> is docs prose, else 1
 
 set -uo pipefail
@@ -29,11 +29,7 @@ case "${1:-all}" in
     ;;
   changed)
     base="${2:-}"
-    if [ -z "$base" ]; then
-      for ref in main origin/main; do
-        git rev-parse --verify --quiet "$ref" >/dev/null 2>&1 && { base="$ref"; break; }
-      done
-    fi
+    [ -z "$base" ] && base=$(bash scripts/review-base.sh 2>/dev/null)
     [ -z "$base" ] && exit 0
     git diff --name-only "${base}...HEAD" -- '*.md' '*.mdx' | while read -r f; do is_prose "$f" && echo "$f"; done
     ;;

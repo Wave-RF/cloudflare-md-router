@@ -13,7 +13,7 @@ If you're building a docs site that already emits a per-page raw-markdown twin (
 | Anything with a file extension (`.css`, `.png`, `.md`, …) | Pass-through to ASSETS |
 | Non-GET                                        | Pass-through to ASSETS |
 | `Accept: text/markdown`                        | `<path>.md` (HTML fallback when the twin is not ok; served as `text/markdown; charset=utf-8`) |
-| `User-Agent` matches a known LLM bot           | `<path>.md` (HTML fallback when the twin is not ok; served as `text/markdown; charset=utf-8`) |
+| `User-Agent` matches a known LLM bot (unless `botUserAgents: false`) | `<path>.md` (HTML fallback when the twin is not ok; served as `text/markdown; charset=utf-8`) |
 | Everything else                                | HTML page — plus a `Link` header advertising its `.md` twin |
 
 On the normal HTML page response, the worker also adds an [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) `Link` header so an agent can discover the markdown twin from a plain GET, without sniffing the User-Agent or guessing the right `Accept`:
@@ -24,7 +24,7 @@ Link: </foo/bar.md>; rel="alternate"; type="text/markdown"
 
 This is on by default (only for a `200 text/html` reply to an extension-less GET); disable it with `advertiseTwin: false`.
 
-Because the worker negotiates on the `Accept` header, two clients can get different representations of the same URL. If you put a shared cache (a CDN, Cloudflare's own cache) in front of it, set `vary: true` to add a `Vary: Accept` header to the negotiated responses so the cache keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. It's off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
+Because the worker negotiates per request, two clients can get different representations of the same URL. Set `vary: true` to add a `Vary: Accept` header to the negotiated responses, so a cache that honors `Vary` keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. It's off by default: the worker then adds no `Vary` of its own, and verbatim pass-through responses never get one. [Caching](#caching) says which caches it is for.
 
 The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-Web, Claude-User, Claude-SearchBot, Amazonbot, DuckAssistBot, anthropic-ai, PerplexityBot, CCBot, Applebot-Extended, Google-Extended, cohere-ai, Bytespider, Diffbot. See `src/bots.ts`.
 
@@ -33,6 +33,17 @@ Three more opt-in features, all off by default:
 - `checkTwin: true` fetches the `.md` twin from `ASSETS` before advertising it, so a route with no twin (an error page, say) gets no dead `Link`. It costs one extra local asset lookup per HTML page.
 - `advertiseLlmsTxt: true` (or a path) adds `Link: </llms.txt>; rel="alternate"; type="text/plain"` to HTML pages.
 - `canonicalOrigin: "https://example.com"` rewrites absolute `og:image` / `twitter:image` URLs under that origin to the origin being browsed when the request host differs (a preview deploy), via `HTMLRewriter`. `canonical` and `og:url` are left alone.
+
+### Caching
+
+`vary: true` matters wherever something stores the Worker's responses:
+
+- **A browser, proxy or CDN in front of your site** keys on `Accept` when it honors `Vary`.
+- **[Workers Caching](https://developers.cloudflare.com/workers/cache/#content-negotiation-with-vary)** (`"cache": { "enabled": true }` in `wrangler.jsonc`) stores one variant per `Accept` value. It [answers `HEAD` from the `GET` entry](https://developers.cloudflare.com/workers/cache/cache-keys/), so a `HEAD` gets the negotiated headers rather than the pass-through. Its key has no hostname, so with `canonicalOrigin` (whose image rewrite depends on the host) a page cached on a preview host can be served on the canonical one, or the reverse: keep Workers Caching off for a Worker that serves both.
+- **The zone's cache doesn't hold these responses.** The Worker [runs in front of it](https://developers.cloudflare.com/workers/reference/how-the-cache-works/), and it keeps what a Worker fetches from an origin or stores with the Cache API, not what the Worker returns. Zone Cache Rules, and their Vary setting, don't apply. Static assets are cached per file, so a page and its `.md` twin never share an entry.
+- **Your own [Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/) use:** put `Accept` in the cache key.
+
+`Vary: Accept` is the whole story only when `Accept` is the only routing input. With User-Agent routing on (the default), a bot gets markdown whatever `Accept` it sends, and a cache stores that reply under the bot's `Accept` value, so a browser sending the same `Accept` string can be served it. Pair `vary: true` with `botUserAgents: false` (see [Accept-only negotiation](#accept-only-negotiation-botuseragents-false)) if that matters. `Vary: User-Agent` is intentionally not added, as it would defeat shared caching.
 
 ## Install
 
@@ -68,11 +79,28 @@ Configure your `wrangler.jsonc` with an ASSETS binding pointing at your built st
 }
 ```
 
-`run_worker_first` is required so the worker sees the request before Cloudflare's static-asset matcher does — otherwise the worker only ever runs on 404s.
+`run_worker_first: true` is the simplest setting: the worker sees every request before Cloudflare's static-asset matcher does. (Without it, the worker only ever runs on 404s.) The catch is that every JS, CSS and image request also invokes the Worker, only for the router to pass it through, and each invocation is billed and adds a little latency.
+
+For a typical static site, scope it to page routes instead. `run_worker_first` also accepts an array of route patterns ([Cloudflare docs](https://developers.cloudflare.com/workers/static-assets/binding/#run_worker_first)):
+
+```jsonc
+"assets": {
+  "directory": "./dist",
+  "binding": "ASSETS",
+  "not_found_handling": "404-page",
+  "html_handling": "drop-trailing-slash",
+  "run_worker_first": ["/*", "!/_astro/*", "!/assets/*"]
+}
+```
+
+The Worker runs first when a pattern matches and no `!` pattern does; `*` matches deeply (across `/`), a `!` pattern always wins over a non-negated one, and the order doesn't matter. Everything else is served by the asset matcher without invoking the Worker. At most 100 entries are allowed. Adjust the excluded directories to wherever your build puts hashed assets (`/_astro/*` for Astro, `/assets/*` for Vite, and so on). Two things to know:
+
+- A request that matches no pattern never reaches the router, so the array must cover every page route (`"/*"` does).
+- Don't exclude by extension with something like `"!/*.*"`: `*` also matches across directories, so it would also exclude any page under a path segment containing a dot (`/docs/v1.2/page`). The router already passes file-extension requests through verbatim, so excluding asset directories is enough.
 
 ## Customizing
 
-Use `createMdRouter()` if you need to extend the bot list, change the `.md` path mapping, or add other Accept tokens:
+Use `createMdRouter()` if you need to extend the bot list, turn User-Agent routing off, change the `.md` path mapping, or add other Accept tokens:
 
 ```ts
 // worker/index.ts
@@ -82,6 +110,9 @@ export default createMdRouter({
   // Add your own bots:
   botUserAgents: new RegExp(LLM_BOT_UA.source + "|mybot", "i"),
 
+  // Or serve markdown on an explicit `Accept` only, never by User-Agent (see below).
+  // botUserAgents: false,
+
   // Treat `Accept: text/x-markdown` as markdown too:
   acceptMarkdown: ["text/x-markdown"],
 
@@ -89,10 +120,14 @@ export default createMdRouter({
   mdPathFor: (pathname) => `/markdown${pathname.replace(/\/$/, "")}.md`,
 
   // Don't advertise the `.md` twin via a `Link` header (default: true).
-  advertiseTwin: false,
+  // Left commented out here: it would also make `checkTwin` below a no-op.
+  // advertiseTwin: false,
 
-  // Add `Vary: Accept` to negotiated responses so a shared cache doesn't
-  // cross-serve the HTML and markdown representations (default: false).
+  // Add `Vary: Accept` to negotiated responses so a cache in front of the
+  // Worker doesn't cross-serve the HTML and markdown representations
+  // (default: false).
+  // With UA routing on (as here), a bot's markdown is cached under that bot's
+  // `Accept`; use `botUserAgents: false` when the cache must never cross-serve.
   vary: true,
 
   // Only advertise a twin that exists (default: false).
@@ -106,13 +141,33 @@ export default createMdRouter({
 });
 ```
 
-To run the negotiation inside a larger Worker, use `createMdResponder(options)`, which returns a plain `(request, env) => Promise<Response>`:
+### Accept-only negotiation (`botUserAgents: false`)
+
+By default the worker also serves markdown to known crawler User-Agents, which helps crawlers that don't send `Accept: text/markdown`. Some site owners would rather negotiate on `Accept` alone, so that no request is answered differently based on who it claims to be (search engines call serving crawlers different content "cloaking"). Pass `botUserAgents: false` to do that:
 
 ```ts
+// worker/index.ts
+import { createMdRouter } from "@wave-rf/cloudflare-md-router";
+
+export default createMdRouter({ botUserAgents: false });
+```
+
+Markdown is then served only when the request asks for it: `Accept: text/markdown`, or one of your `acceptMarkdown` tokens. Everything else gets the HTML page, still with the `Link` header advertising the `.md` twin, so an agent can find it from a plain GET. The trade-off: crawlers that don't negotiate and don't follow the `Link` header will receive HTML. Because `Accept` is then the only routing input, `vary: true` lets a shared cache that honors `Vary: Accept` store the negotiated responses safely (see [Caching](#caching)).
+
+### Inside a larger Worker (`createMdResponder`)
+
+To run the negotiation as one step of a larger Worker, use `createMdResponder(options)`. It takes the same options and returns a plain `(request, env) => Promise<Response>`:
+
+```ts
+import { createMdResponder, type MdRouterEnv } from "@wave-rf/cloudflare-md-router";
+
 const respond = createMdResponder({ vary: true });
 export default {
-  fetch: (request, env) => (isApi(request) ? api(request, env) : respond(request, env)),
-};
+  fetch: (request, env) =>
+    new URL(request.url).pathname.startsWith("/api/")
+      ? Response.json({ ok: true }) // your own routes here
+      : respond(request, env),
+} satisfies ExportedHandler<MdRouterEnv>;
 ```
 
 ## Dev loop (`cloudflare-md-router dev`)

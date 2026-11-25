@@ -7,7 +7,7 @@ Context for AI coding agents (Claude Code, Copilot, Cursor, etc.) working on thi
 The non-negotiables, ordered by how often agents miss them. These override convenience: if a rule blocks you, satisfy it; don't work around it.
 
 1. **Validate locally before every push** — `pnpm run verify` (Biome + `tsc --noEmit` + `node --test` + the offline release-config check). Don't use CI as your first feedback loop ([§Local-First Validation](#local-first-validation)).
-2. **A PR-branch push needs every pre-push reviewer satisfied** — run **`/prepush`**: it reads `scripts/pre-push-reviewers.sh`, runs the reviewers the change needs in parallel (fresh context), skips the rest *on the record*, and loops until each it ran returns `ship_it` ([§Agent PR Discipline](#agent-pr-discipline)).
+2. **A PR-branch push needs every pre-push reviewer satisfied** — run **`/prepush`**: it reads `scripts/pre-push-reviewers.sh`, runs the reviewers the change needs in parallel (fresh context), skips the rest *on the record*, and loops until each it ran returns `ship_it`. It only works in a Claude Code session **started in this repo or one of its worktrees**; from anywhere else run **`scripts/prepush-headless.sh`** ([§Agent PR Discipline](#agent-pr-discipline)).
 3. **Every public-surface change updates its docs in the same PR** — a changed `MdRouterOptions` option / export / default / the `LLM_BOT_UA` bot list / the `wrangler.jsonc` contract must update the **`src/` JSDoc** **and** `README.md` ([§Documentation Sync](#documentation-sync)). Release notes are **generated into GitHub Releases** (`CHANGELOG.md` is frozen history) — don't hand-edit it; just use the right Conventional-Commit type, because it decides whether the merge releases ([§Release Process](#release-process)).
 4. **Address and resolve every review finding** — fix it or track it in an issue; never silently drop one ([§Review Response](#review-response)).
 5. **Drafts only; valid title** — `gh pr create --draft` (never `gh pr ready`/approve); the PR **title** must pass Conventional Commits — check with `scripts/lint-pr-title.sh "<title>"` before creating ([§Agent PR Discipline](#agent-pr-discipline)).
@@ -20,18 +20,18 @@ A tiny, **pure-ESM** Cloudflare Worker for **request-time content negotiation** 
 
 There is **no build step**: the package ships **raw TypeScript** — `src/index.ts` (the public re-export barrel), `src/worker.ts` (the whole implementation), and `src/bots.ts` (the crawler regex). Consumers bundle the `.ts` with Wrangler/esbuild (`exports` point straight at the `.ts` files; `tsconfig` uses `allowImportingTsExtensions` + `verbatimModuleSyntax`). The Worker code runs on the **Workers runtime**, not Node — no Node built-ins. The one exception is the Node-only `bin/` dev CLI (`cloudflare-md-router dev`), which ships too but is never imported by `src/` (invariant 8).
 
-`createMdRouter(options)` returns a Workers `ExportedHandler`; `mdRouter` (and the default export) is the zero-config instance. `LLM_BOT_UA` is the default crawler regex, exported so consumers can compose their own.
+`createMdRouter(options)` returns a Workers `ExportedHandler`; `mdRouter` (and the default export) is the zero-config instance. `createMdResponder(options)` returns the same logic as a plain `(request, env) => Promise<Response>` (`MdResponder`) for use inside a larger Worker. `LLM_BOT_UA` is the default crawler regex, exported so consumers can compose their own.
 
 ## Key Invariants
 
 What must stay true. Preserve the named invariant when you touch its code. The Worker's routing is covered by `test/worker.test.mjs` (stub `ASSETS`, stub `HTMLRewriter`) — if you add non-trivial routing logic, adding a test (a stub `ASSETS` Fetcher) is encouraged.
 
-1. **Pass-through is verbatim.** Non-GET requests, any pathname matching the file-extension guard (`/\.[a-zA-Z0-9]+$/`), and "normal" requests that don't want markdown are forwarded to `env.ASSETS.fetch(request)` unchanged. The worker must never alter a pass-through **body**, and apart from the opt-in `Link` header it must not alter status or other headers.
-2. **Markdown-routing trigger** = `acceptTokens.some(tok => accept.includes(tok)) || botUserAgents.test(ua)`, where `acceptTokens` **always** contains `"text/markdown"` (consumer tokens via `acceptMarkdown` are *added*, never replace it) and `botUserAgents` defaults to the **case-insensitive** `LLM_BOT_UA`. Don't drop the always-on `text/markdown`, make the UA match case-sensitive, or over-match.
+1. **Pass-through is verbatim.** Non-GET requests and any pathname matching the file-extension guard (`/\.[a-zA-Z0-9]+$/`) are forwarded to `env.ASSETS.fetch(request)` and returned untouched. "Normal" requests that don't want markdown are forwarded unchanged too, and their response changes only in the documented, option-controlled ways: the `Link` header(s) (`advertiseTwin`, on by default; `advertiseLlmsTxt`), `Vary: Accept` (`vary`), and the `og:image`/`twitter:image` rewrite on a non-canonical host (`canonicalOrigin`). Beyond those, the worker must never alter a pass-through body, status or header.
+2. **Markdown-routing trigger** = `acceptTokens.some(tok => accept.includes(tok)) || botUserAgents.test(ua)`, where `acceptTokens` **always** contains `"text/markdown"` (consumer tokens via `acceptMarkdown` are *added*, never replace it) and `botUserAgents` defaults to the **case-insensitive** `LLM_BOT_UA`; passing `false` turns UA routing off entirely (the trigger then reduces to the `Accept` match; the `Link` header and everything else are unchanged). Don't drop the always-on `text/markdown`, make the UA match case-sensitive, over-match, or let `false` fall back to the default.
 3. **HTML fallback on a missing twin.** When markdown is wanted, fetch `mdPathFor(pathname)`; on any **non-ok** reply fall back to `env.ASSETS.fetch(request)` (the *original* request) — never surface the error, never loop, never re-fetch the `.md` path. An ok twin is returned with `Content-Type: text/markdown; charset=utf-8`.
-4. **The `Link` header is opt-in and narrowly scoped.** Appended **only** when `advertiseTwin` (default `true`; with `checkTwin`, also only if the twin fetch is `ok`) AND `response.status === 200` AND the `Content-Type`'s first media-type token (lowercased, `;`-params stripped) is exactly `text/html`. It is added via `new Response(response.body, response)` (an asset response's headers are immutable) and its value percent-encodes **each path segment** of `mdPathFor(pathname)` then wraps it `<…>; rel="alternate"; type="text/markdown"`. The per-segment `encodeURIComponent` is the guard against header injection / a malformed `Link` — don't weaken it, and don't add the header to the `.md` or pass-through responses.
+4. **The `Link` header is on by default and narrowly scoped.** Appended **only** when `advertiseTwin` (default `true`; with `checkTwin`, also only if the twin fetch is `ok`) AND `response.status === 200` AND the `Content-Type`'s first media-type token (lowercased, `;`-params stripped) is exactly `text/html`. It is added via `new Response(response.body, response)` (an asset response's headers are immutable) and its value percent-encodes **each path segment** of `mdPathFor(pathname)` then wraps it `<…>; rel="alternate"; type="text/markdown"`. The `llms.txt` `Link` (`advertiseLlmsTxt`) follows the same `200 text/html` rule, independent of `advertiseTwin`. The per-segment `encodeURIComponent` is the guard against header injection / a malformed `Link` — don't weaken it, and don't add the header to the `.md` or pass-through responses.
 5. **`mdPathFor` default contract** — strip a trailing slash and append `.md`; the special case `/` → `/index.md`. A custom `mdPathFor` is consumer-supplied; the result is resolved against the request origin.
-6. **The `ASSETS` Fetcher binding + `run_worker_first`** — the worker needs an `ASSETS` binding (`MdRouterEnv.ASSETS: Fetcher`) and, in the consumer's `wrangler.jsonc`, `run_worker_first: true` so the worker sees the request before Cloudflare's static-asset matcher (otherwise it only runs on 404s). This is a documented contract — preserve it in code and docs.
+6. **The `ASSETS` Fetcher binding + `run_worker_first`** — the worker needs an `ASSETS` binding (`MdRouterEnv.ASSETS: Fetcher`) and, in the consumer's `wrangler.jsonc`, `assets.run_worker_first` set so the worker runs **first for page routes**, before Cloudflare's static-asset matcher (otherwise it only runs on 404s): either `true` (every request; simplest) or an array of route patterns (`["/*", "!/_astro/*", "!/assets/*"]`: `*` matches deeply, a `!` pattern excludes and wins over a non-negated match, order is irrelevant, max 100 entries) that keeps asset requests off the Worker. Requests that don't match run asset-first and never reach the router, so the array must cover every page route. This is a documented contract — preserve it in code and docs.
 7. **Bounded fetches** — at most two `ASSETS.fetch` calls per request (the twin then the HTML fallback, or the page then the `checkTwin` lookup). No recursive or unbounded fetching. The UA regex runs on attacker-controlled input, so keep it **linear** (no catastrophic backtracking / ReDoS).
 8. **ESM + raw-TS shipping, Workers runtime** — `type: module`; ships `.ts` with `.ts` import specifiers; no CommonJS, no build step, no Node-only APIs. `engines.node` (`>=18`) documents the consumer-tooling floor, not the runtime. The one exception is the `bin/` dev CLI, which needs Node 20+ (recursive `fs.watch` on Linux); the README says so, and `engines` stays at 18 so Worker-only consumers aren't excluded.
 
@@ -44,13 +44,13 @@ pnpm run typecheck      # tsc --noEmit (strict)
 pnpm run check          # biome check . (lint + format check) — the CI gate
 pnpm run format         # biome format --write . (auto-fix formatting)
 pnpm run lint           # biome lint .
-pnpm run test           # node --test (the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test that asserts no child outlives the CLI)
+pnpm run test           # node --test (the Worker's routing against a stub ASSETS, plus the bin/ dev-loop CLI: pure helpers + a fixture-site smoke test that asserts no child outlives the CLI)
 pnpm run verify         # biome check . && pnpm run typecheck && pnpm run test && pnpm run check:release, then write the tree marker
 ```
 
 **Dependencies are locked and aged.** `pnpm-lock.yaml` is committed; CI and the release build use `pnpm install --frozen-lockfile`, so they get exactly the tree that was tested (the lockfile doesn't reach consumers, who resolve with their own). `pnpm-workspace.yaml` sets `minimumReleaseAge: 10080` (7 days, `@wave-rf/*` and `@wavehouse/*` exempt) and Dependabot has a matching 7-day `cooldown`. Third-party GitHub Actions are pinned by commit SHA with a `# vX.Y.Z` comment.
 
-The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `tsc --noEmit` + those. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.
+The tests are `node --test` over `test/`: `worker.test.mjs` (the routing, with a stub `ASSETS` and `HTMLRewriter`), `lib.test.mjs` and `smoke.test.mjs` (the `bin/` CLI); CI is Biome + `tsc --noEmit` + those + the release-config check. Biome owns JS/TS/JSON formatting + lint. Run `pnpm run format` to fix formatting; the Claude format-on-save hook keeps edited files clean automatically.
 
 ## Local-First Validation
 
@@ -59,7 +59,9 @@ The only tests are `node --test` over `test/` (the `bin/` CLI); CI is Biome + `t
 Enforced via git hooks (installed by `pnpm run setup`; apply to humans and agents alike):
 
 - **`.githooks/pre-commit`** runs `pnpm run verify` unless the current tree's marker already exists (cached).
-- **`.githooks/pre-push`** requires `tmp/verify-passed-tree-<TREE>` for each pushed commit's tree. Tree-keyed, so `verify → commit → push` needs no re-run when the tree is unchanged. Skipped on CI (`$CI` set).
+- **`.githooks/pre-push`** requires `tmp/verify-passed-tree-<TREE>` for each pushed commit's tree. Tree-keyed, so `verify → commit → push` needs no re-run when the tree is unchanged. From a Claude Code shell it also checks the pre-push review markers (§Agent PR Discipline).
+
+CI never installs the hooks (it runs the checks itself), and `scripts/ci-marker.sh write` is a no-op when `$CI` is set.
 
 Bypass (`--no-verify`) is for human WIP only; agents must not (§Don't bypass the gates).
 
@@ -98,6 +100,8 @@ Force-pushes (`--force`, `--force-with-lease`) are blocked by `.claude/settings.
 
 Agents follow the universal git hooks (pre-commit + pre-push in `.githooks/`). On top of that, PR-workflow rules with no human analog are checked by `.claude/hooks/agent-bash-gate.sh`. The gate is a guard rail against accidents, not adversarial enforcement.
 
+**Claude Code loads this repo's agents, commands and hooks only in a session that started here** (the repo root or one of its worktrees). A session launched from another directory has no `pre-push-reviewer`/`docs-reviewer` subagent types, no `/prepush`, and none of the hooks below, so nothing writes review markers. Use `scripts/prepush-headless.sh` there (§Pre-push self-review).
+
 ### Drafts only
 
 Create PRs with `gh pr create --draft`. Only humans flip draft → ready (`gh pr ready` is blocked) and only humans approve / request changes (`gh pr review --approve`/`--request-changes` are blocked). Adding/removing human reviewers is humans-only.
@@ -111,7 +115,26 @@ Before pushing a non-main branch, **every** reviewer in `scripts/pre-push-review
 - **`pre-push-reviewer`** (code) — the full diff vs `main`, the latest commit, open PR comments/reviews, CI status, linked issues.
 - **`docs-reviewer`** (docs) — `README.md`/the `src/` JSDoc for accuracy-vs-code, runnable examples, clarity, **plus** code↔docs sync (code that changed but whose docs didn't).
 
-**`ship_it` requires zero findings at any severity** — a single `[MAY]` forces `iterate`. The orchestrator loops: address every finding, commit, re-invoke the reviewer(s) in fresh context, until all say `ship_it`. The push gate (`agent-bash-gate.sh`) lists any missing markers; `git push` succeeds only when every listed reviewer has one. On `block`, stop and surface it to the user.
+**`ship_it` requires zero findings at any severity** — a single `[MAY]` forces `iterate`. The orchestrator loops: address every finding, commit, re-invoke the reviewer(s) in fresh context, until all say `ship_it`. On `block`, stop and surface it to the user.
+
+Reviewers diff against `scripts/review-base.sh` (`origin/main`, else `main`): in a worktree, local `main` is shared with the main checkout and is often stale, and `git diff main...HEAD` would count upstream commits as part of the change. Run `git fetch origin main` first.
+
+**Where the markers are checked.** Markers are local files (`tmp/` in the work tree being pushed), so CI can't see them. `scripts/check-review-markers.sh <sha>` is the one check, used in two places:
+
+- the Claude Code push gate (`agent-bash-gate.sh`, PreToolUse on `git push`), in sessions started in this repo or a worktree of it; it lists any missing markers before the push runs;
+- `.githooks/pre-push`, for every branch push made from a Claude Code shell (`$CLAUDECODE` set), wherever the session started. This backstop exists because a session launched elsewhere skips the gate, and a review "run" by general-purpose agents following the `.md` definitions writes no markers, so that push used to go through unreviewed without a word.
+
+Human pushes from your own shell aren't review-gated. Other agents (Copilot, Cursor, …) aren't checked mechanically: for them the rule is policy.
+
+**From a session that didn't start in this repo** (or with no interactive session at all), run the review in a fresh headless Claude Code process started at the work tree's root, so the real agents, `/prepush` and hooks load:
+
+```bash
+scripts/prepush-headless.sh          # runs /prepush all there, then checks the markers for HEAD
+```
+
+It runs `claude -p "/prepush all"` from the work tree root, reports each reviewer's findings, then checks the markers for HEAD: exit 0 when all are present, 1 when some are missing. It reviews and stops; you fix findings, commit, and run it again until it exits 0. It needs the `claude` CLI and fails with a clear message without it. Don't emulate the reviewers with general-purpose agents: no marker, and the push is blocked.
+
+The nested session runs unattended and reads untrusted text (PR comments, bot reviews, the diff), so its tools are read-only in fact: `--permission-mode dontAsk`, an `--allowedTools` list of git/gh read commands and the review-list scripts, `--setting-sources project` and `--strict-mcp-config` (that list *adds* to every loaded settings file's allow rules, so only the repo's checked-in `.claude/settings.json` loads, which still brings the hooks), `--output`/`--watch`/`--web`/`--ext-diff`/`--textconv` denied, git run without global/system config and with attributes from the empty tree (so a revision can't make `git diff` run a textconv or external-diff helper), no `Edit`/`Write`, no `gh api` (an endpoint rule would also admit POSTs, file uploads and approvals) and no skip script. The script fetches the PR's inline review comments itself, with fixed arguments, into `tmp/` for the reviewers to read. It runs every reviewer; to skip one that is genuinely out of lane, run `scripts/skip-pre-push-review.sh` yourself.
 
 ### Adding a pre-push reviewer
 
@@ -125,7 +148,7 @@ The marker `tmp/<name>-passed-<HEAD>` is then required automatically, `review-ma
 ### Don't bypass the gates
 
 - `--no-verify` is for human WIP; agents don't use it.
-- Markers are written by tooling, never by hand: `tmp/verify-passed-tree-*` by `pnpm run verify`; `tmp/<reviewer>-passed-*` by the `review-marker.sh` SubagentStop hook on `ship_it`, or by `scripts/skip-pre-push-review.sh` for a deliberately-skipped reviewer (which logs the reason). Don't `touch`/`Write`/`Edit` a marker. To skip, use the skip command so it's recorded.
+- Markers are written by tooling, never by hand: `tmp/verify-passed-tree-*` by `pnpm run verify`; `tmp/<reviewer>-passed-*` by the `review-marker.sh` SubagentStop hook on `ship_it` (only for a subagent whose type is the reviewer's name), or by `scripts/skip-pre-push-review.sh` for a deliberately-skipped reviewer (which logs the reason). Don't `touch`/`Write`/`Edit` a marker. To skip, use the skip command so it's recorded.
 
 These are policy, not mechanically enforced — an agent can edit the gate itself. Trust beats whack-a-mole.
 
@@ -136,7 +159,7 @@ Every change to the public surface updates its docs in the same PR:
 | Change | Files to update |
 | ------ | --------------- |
 | Add/modify an `MdRouterOptions` option or its default | `src/worker.ts` (the type + JSDoc), `README.md` (Customizing section + behavior table) |
-| Add/modify an export or a subpath (`createMdRouter`, `mdRouter`, `LLM_BOT_UA`, `./worker`, `./bots`) | `src/index.ts`/`src/worker.ts` JSDoc, `package.json` `exports`, `README.md` (Use) |
+| Add/modify an export or a subpath (`createMdRouter`, `createMdResponder`, `mdRouter`, `LLM_BOT_UA`, the `MdRouter*`/`MdResponder` types, `./worker`, `./bots`) | `src/index.ts`/`src/worker.ts` JSDoc, `package.json` `exports`, `README.md` (Use / Customizing) |
 | Change a routing invariant (pass-through rules, fallback, the `Link` header) | `README.md` (behavior table + the relevant note), the `src/` JSDoc |
 | Change the `LLM_BOT_UA` bot list | `src/bots.ts`, `README.md` (the enumerated bot list) |
 | Change the package name / `exports` / `engines` / peer deps / the `wrangler.jsonc` contract | `README.md` (Install + Use), `package.json` |
@@ -149,16 +172,18 @@ Before finishing, grep the identifiers you touched (option names, export names, 
 
 This repo is set up for [Worktrunk](https://github.com/) (`wt`, config in `.config/wt.toml`): `wt switch --create <branch>` seeds `node_modules/` from main (per `.worktreeinclude`), runs `pnpm install`, and installs the git hooks (`pnpm run setup`). `.worktrees/` is gitignored. `wt` is an external tool (install it separately); without it, the manual equivalent is `git worktree add` + `pnpm install` + `pnpm run setup`.
 
+Each work tree has its own `tmp/`, so run `pnpm run verify` and the review in the worktree you push from; markers from another checkout don't count. Start the Claude Code session in the worktree (or run `scripts/prepush-headless.sh` there). The hooks follow the session into a worktree of this repo (they resolve the work tree from the hook's `cwd`, not only `$CLAUDE_PROJECT_DIR`).
+
 ## File Structure
 
 ```text
 src/index.ts            → public re-export barrel (the API entry; ships)
-src/worker.ts           → the whole implementation: createMdRouter + mdRouter + the MdRouter* types (ships)
+src/worker.ts           → the whole implementation: createMdRouter + createMdResponder + mdRouter + the MdRouter*/MdResponder types (ships)
 src/bots.ts             → LLM_BOT_UA, the default crawler User-Agent regex (ships)
 bin/cli.mjs, dev.mjs, lib.mjs → the `cloudflare-md-router dev` CLI (ships; plain Node ESM, Node built-ins only; Node, NOT Workers — `src/` must never import `bin/`)
-test/                   → node --test suite for bin/ (pure helpers + fixture-site smoke test, run under npm and pnpm; no network)
+test/                   → node --test: worker.test.mjs (routing, stub ASSETS) + the bin/ suite (pure helpers + fixture-site smoke test, run under npm and pnpm); no network
 tsconfig.json           → strict, ESNext, Bundler resolution, allowImportingTsExtensions (the typecheck gate)
-scripts/                → shell + node tooling (PR-title lint, reviewer manifest, markers, release-config check, repo setup)
+scripts/                → shell + node tooling (PR-title lint, reviewer manifest, review base + marker check, headless /prepush, markers, release-config check, repo setup)
 .githooks/              → universal pre-commit + pre-push (installed via pnpm run setup)
 .claude/                → settings, review subagents, /prepush + /release commands, gate/marker/format hooks
 .github/                → CI, pr-title, publish (semantic-release + OIDC), dependabot; prompts/ review rubrics
@@ -171,4 +196,4 @@ scripts/                → shell + node tooling (PR-title lint, reviewer manife
 - **`pr-title.yml`** — Conventional-Commit title check (required); skips the check for `dependabot[bot]`.
 - **`publish-npm.yml`** — release on merge: every push to `main` runs `verify`, then semantic-release, which tags `vX.Y.Z`, publishes to npm via OIDC with provenance, and creates the GitHub Release — or does nothing if no commit warrants a release. ONE file (npm allows one trusted-publisher filename per package).
 - **`dependabot.yml` + `dependabot-automerge.yml`** — weekly grouped dep/action bumps; patch/minor auto-merge after CI, major held for review.
-- Third-party actions are pinned to commit SHAs with version comments where verified (`dependabot/fetch-metadata` is on a major tag pending a SHA pin).
+- Third-party actions are pinned to commit SHAs with a `# vX.Y.Z` comment.

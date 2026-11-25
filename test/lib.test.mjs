@@ -29,6 +29,7 @@ import {
   sameDir,
   stripJsonc,
 } from "../bin/lib.mjs";
+import { cleanGitEnv, withCleanGitEnv } from "./git-env.mjs";
 
 // Canonical, so expectations match resolveOptions' canonical paths (macOS tmp is /var → /private/var).
 const tmp = () => canonicalPath(mkdtempSync(join(tmpdir(), "mdr-lib-")));
@@ -415,23 +416,28 @@ test("output dir: the site root, its ancestors, / and the wrangler config's dir 
 test("output dir: one with a package.json, or git-tracked files, is refused", (t) => {
   const root = site({ "package.json": "{}", "pkg/package.json": "{}" });
   refuses(root, ["--out-dir", "pkg"], /has a package\.json/);
-  if (spawnSync("git", ["--version"]).status !== 0) {
+  if (spawnSync("git", ["--version"], { env: cleanGitEnv() }).status !== 0) {
     t.skip("git is not installed");
     return;
   }
   write(root, "content/post.md", "# hi");
   write(root, "content/other.md", "# hi");
   write(root, "dist/index.html", "built");
-  assert.equal(spawnSync("git", ["init", "-q", root]).status, 0);
-  assert.equal(spawnSync("git", ["-C", root, "add", "content"]).status, 0);
-  refuses(
-    root,
-    ["--out-dir", "content"],
-    /holds 2 git-tracked file\(s\) \(content\/other\.md, content\/post\.md\)/
-  );
-  // Untracked build output is fine, and so is a dir that doesn't exist yet.
-  assert.equal(resolveOptions(parseArgs([]), {}, root).outDir, join(root, "dist"));
-  assert.equal(resolveOptions(parseArgs(["--out-dir", "new"]), {}, root).outDir, join(root, "new"));
+  assert.equal(spawnSync("git", ["init", "-q", root], { env: cleanGitEnv() }).status, 0);
+  assert.equal(spawnSync("git", ["-C", root, "add", "content"], { env: cleanGitEnv() }).status, 0);
+  withCleanGitEnv(() => {
+    refuses(
+      root,
+      ["--out-dir", "content"],
+      /holds 2 git-tracked file\(s\) \(content\/other\.md, content\/post\.md\)/
+    );
+    // Untracked build output is fine, and so is a dir that doesn't exist yet.
+    assert.equal(resolveOptions(parseArgs([]), {}, root).outDir, join(root, "dist"));
+    assert.equal(
+      resolveOptions(parseArgs(["--out-dir", "new"]), {}, root).outDir,
+      join(root, "new")
+    );
+  });
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -490,7 +496,7 @@ test("output dir: SRC is src on a case-insensitive Linux mount, by identity alon
 });
 
 test("output dir: git-tracked files are found whatever the case of the path", (t) => {
-  if (spawnSync("git", ["--version"]).status !== 0) {
+  if (spawnSync("git", ["--version"], { env: cleanGitEnv() }).status !== 0) {
     t.skip("git is not installed");
     return;
   }
@@ -499,10 +505,13 @@ test("output dir: git-tracked files are found whatever the case of the path", (t
     t.skip("this filesystem is case-sensitive, so SRC is a different (missing) directory");
     return;
   }
-  assert.equal(spawnSync("git", ["init", "-q", root]).status, 0);
-  assert.equal(spawnSync("git", ["-C", root, "add", "src"]).status, 0);
+  assert.equal(spawnSync("git", ["init", "-q", root], { env: cleanGitEnv() }).status, 0);
+  assert.equal(spawnSync("git", ["-C", root, "add", "src"], { env: cleanGitEnv() }).status, 0);
   // `git ls-files -- SRC` alone finds nothing, even with core.ignorecase; the guard's pathspec must.
-  assert.deepEqual(gitTrackedFiles(root, join(root, "SRC")), ["src/a.ts"]);
+  assert.deepEqual(
+    withCleanGitEnv(() => gitTrackedFiles(root, join(root, "SRC"))),
+    ["src/a.ts"]
+  );
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -554,4 +563,30 @@ test("IGNORED skips Vite 3-5 temp configs and editor droppings, not real source"
   ]) {
     assert.ok(!IGNORED.test(name), `should keep ${name}`);
   }
+});
+
+test("cleanGitEnv: `git init` under a hook's GIT_DIR leaves that repository alone", (t) => {
+  if (spawnSync("git", ["--version"], { env: cleanGitEnv() }).status !== 0) {
+    t.skip("git is not installed");
+    return;
+  }
+  const scratch = mkdtempSync(join(tmpdir(), "mdr-hook-"));
+  const target = mkdtempSync(join(tmpdir(), "mdr-hook-t-"));
+  const saved = process.env.GIT_DIR;
+  t.after(() => {
+    if (saved === undefined) delete process.env.GIT_DIR;
+    else process.env.GIT_DIR = saved;
+    rmSync(scratch, { recursive: true, force: true });
+    rmSync(target, { recursive: true, force: true });
+  });
+  const git = (...args) => spawnSync("git", args, { env: cleanGitEnv(), encoding: "utf8" });
+  assert.equal(git("init", "-q", scratch).status, 0);
+  const gitDir = join(scratch, ".git");
+  const bare = () => git("--git-dir", gitDir, "config", "core.bare").stdout.trim();
+  assert.equal(bare(), "false");
+  process.env.GIT_DIR = gitDir; // what git exports to a hook
+  assert.equal(cleanGitEnv().GIT_DIR, undefined);
+  assert.equal(spawnSync("git", ["init", "-q", target], { env: cleanGitEnv() }).status, 0);
+  assert.equal(bare(), "false", "the hook's repository was re-initialized as bare");
+  assert.ok(existsSync(join(target, ".git")));
 });
