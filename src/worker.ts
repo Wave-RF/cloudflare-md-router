@@ -131,7 +131,7 @@ export function createMdRouter<Env extends MdRouterEnv = MdRouterEnv>(
  *  export default {
  *    fetch: (request, env) =>
  *      new URL(request.url).pathname.startsWith("/api/")
- *        ? handleApi(request, env)
+ *        ? Response.json({ ok: true }) // your own routes here
  *        : respond(request, env),
  *  };
  *  ```
