@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ChildSet, gitIgnoredFilter, syncDirs } from "../bin/dev.mjs";
+import { cleanGitEnv, withCleanGitEnv } from "./git-env.mjs";
 
 const CLI = fileURLToPath(new URL("../bin/cli.mjs", import.meta.url));
 const TIMEOUT = { timeout: 60_000 };
@@ -115,7 +116,7 @@ function startDev(t, site, args, env = {}) {
   const child = spawn(process.execPath, [CLI, "dev", "--port", String(port), ...args], {
     cwd: site.root,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, PORT: undefined, FIXTURE_LOGS: site.logs, ...env },
+    env: { ...cleanGitEnv(), PORT: undefined, FIXTURE_LOGS: site.logs, ...env },
   });
   let log = "";
   child.stdout.on("data", (b) => {
@@ -293,7 +294,7 @@ for (const [label, cache, git, removed] of [
       writeFileSync(join(site.root, "config/site.json"), "{}");
       if (git) {
         writeFileSync(join(site.root, ".gitignore"), `${cache}/\n`);
-        assert.equal(spawnSync("git", ["init", "-q", site.root]).status, 0);
+        assert.equal(spawnSync("git", ["init", "-q", site.root], { env: cleanGitEnv() }).status, 0);
       }
       const dev = startDev(
         t,
@@ -413,7 +414,7 @@ test(
     writeFileSync(join(site.root, ".env"), "A=1");
     mkdirSync(join(site.root, "content"));
     writeFileSync(join(site.root, "content/post.md"), "# one");
-    assert.equal(spawnSync("git", ["init", "-q", site.root]).status, 0);
+    assert.equal(spawnSync("git", ["init", "-q", site.root], { env: cleanGitEnv() }).status, 0);
     const dev = startDev(t, site, ["--build", "node build.mjs", "--watch", "content"]);
     await until(() => has(site, "wrangler.pid"), "wrangler to start");
     const builds = () => read(site, "build.pids").trim().split("\n").length;
@@ -467,7 +468,8 @@ for (const git of [false, true]) {
     async (t) => {
       const site = makeSite();
       writeFileSync(join(site.root, "vite.config.ts"), "export default {}");
-      if (git) assert.equal(spawnSync("git", ["init", "-q", site.root]).status, 0);
+      if (git)
+        assert.equal(spawnSync("git", ["init", "-q", site.root], { env: cleanGitEnv() }).status, 0);
       const dev = startDev(t, site, ["--build", "node build.mjs"], { FIXTURE_VITE: "1" });
       await until(() => has(site, "wrangler.pid"), "wrangler to start");
       await serving(dev);
@@ -484,7 +486,7 @@ for (const git of [false, true]) {
 }
 
 test("gitIgnoredFilter: dir-only patterns match vanished dirs, never an existing regular file", (t) => {
-  if (spawnSync("git", ["--version"]).status !== 0) {
+  if (spawnSync("git", ["--version"], { env: cleanGitEnv() }).status !== 0) {
     t.skip("git is not installed");
     return;
   }
@@ -493,8 +495,8 @@ test("gitIgnoredFilter: dir-only patterns match vanished dirs, never an existing
   writeFileSync(join(root, ".gitignore"), "lib/\ntmpbuild/\n");
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src/lib"), "a regular file named like a dir-only pattern");
-  assert.equal(spawnSync("git", ["init", "-q", root]).status, 0);
-  const keep = gitIgnoredFilter(root);
+  assert.equal(spawnSync("git", ["init", "-q", root], { env: cleanGitEnv() }).status, 0);
+  const keep = (files) => withCleanGitEnv(() => gitIgnoredFilter(root)(files));
   // tmpbuild/ no longer exists (the build removed it); src/lib is a file, which `lib/` doesn't match.
   assert.deepEqual(keep(["src/lib", "tmpbuild", "tmpbuild/x.js", "src/page.txt"]), [
     "src/lib",
