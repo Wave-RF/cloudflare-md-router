@@ -24,7 +24,7 @@ Link: </foo/bar.md>; rel="alternate"; type="text/markdown"
 
 This is on by default (only for a `200 text/html` reply to an extension-less GET); disable it with `advertiseTwin: false`.
 
-Because the worker negotiates on the `Accept` header, two clients can get different representations of the same URL. If you put a shared cache (a CDN, Cloudflare's own cache) in front of it, set `vary: true` to add a `Vary: Accept` header to the negotiated responses so the cache keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. It's off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
+Because the worker negotiates on the `Accept` header, two clients can get different representations of the same URL. If you put a shared cache in front of it, set `vary: true` to add a `Vary: Accept` header to the negotiated responses, so a cache that honors `Vary` keys on `Accept` and doesn't serve the HTML page to a client that asked for markdown — or vice-versa. The header alone isn't enough everywhere: Cloudflare's CDN cache ignores `Vary` by default, and needs a [Cache Rule with the Vary setting](https://developers.cloudflare.com/cache/concepts/vary/) for `accept`. It's off by default (verbatim pass-through stays byte-for-byte; `Vary: User-Agent` is intentionally not added, as it would defeat shared caching).
 
 The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBot, ClaudeBot, Claude-Web, Claude-User, Claude-SearchBot, Amazonbot, DuckAssistBot, anthropic-ai, PerplexityBot, CCBot, Applebot-Extended, Google-Extended, cohere-ai, Bytespider, Diffbot. See `src/bots.ts`.
 
@@ -134,11 +134,15 @@ By default the worker also serves markdown to known crawler User-Agents, which h
 export default createMdRouter({ botUserAgents: false });
 ```
 
-Markdown is then served only when the request asks for it: `Accept: text/markdown`, or one of your `acceptMarkdown` tokens. Everything else gets the HTML page, still with the `Link` header advertising the `.md` twin, so an agent can find it from a plain GET. The trade-off: crawlers that don't negotiate and don't follow the `Link` header will receive HTML. Because `Accept` is then the only routing input, `vary: true` makes the negotiated responses fully safe to keep in a shared cache.
+Markdown is then served only when the request asks for it: `Accept: text/markdown`, or one of your `acceptMarkdown` tokens. Everything else gets the HTML page, still with the `Link` header advertising the `.md` twin, so an agent can find it from a plain GET. The trade-off: crawlers that don't negotiate and don't follow the `Link` header will receive HTML. Because `Accept` is then the only routing input, `vary: true` lets a shared cache that honors `Vary: Accept` store the negotiated responses safely (on Cloudflare, that takes the Cache Rule above).
 
-To run the negotiation inside a larger Worker, use `createMdResponder(options)`, which returns a plain `(request, env) => Promise<Response>`:
+### Inside a larger Worker (`createMdResponder`)
+
+To run the negotiation as one step of a larger Worker, use `createMdResponder(options)`. It takes the same options and returns a plain `(request, env) => Promise<Response>`:
 
 ```ts
+import { createMdResponder } from "@wave-rf/cloudflare-md-router";
+
 const respond = createMdResponder({ vary: true });
 export default {
   fetch: (request, env) => (isApi(request) ? api(request, env) : respond(request, env)),

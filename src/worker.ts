@@ -28,9 +28,10 @@ export interface MdRouterOptions {
   advertiseTwin?: boolean;
   /** Append `Vary: Accept` to the responses this worker negotiates on the
    *  `Accept` header (the `.md` twin, the HTML fallback when the twin is
-   *  missing, and the normal HTML page), so a shared cache keyed only on the
-   *  URL doesn't serve the HTML representation to a client that asked for
-   *  markdown — or vice-versa (RFC 9110 §12.5.5). Merges with any existing
+   *  missing, and the normal HTML page), so a shared cache that honors `Vary`
+   *  doesn't serve the HTML representation to a client that asked for
+   *  markdown — or vice-versa (RFC 9110 §12.5.5). Cloudflare's CDN cache
+   *  ignores `Vary` unless a Cache Rule's Vary setting covers `accept`. Merges with any existing
    *  `Vary` rather than replacing it; verbatim pass-through responses (non-GET,
    *  extension-bearing paths) are left untouched. Only `Accept` is listed:
    *  `User-Agent` is also (by default) a routing input, but `Vary: User-Agent` defeats
