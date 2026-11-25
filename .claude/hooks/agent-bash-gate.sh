@@ -140,6 +140,8 @@ if git_subcmd 'push' && ! git_subcmd_is_help 'push'; then
     # require, so fail CLOSED rather than let an un-reviewed push by.
     # Run the check that ships with THIS hook (the launch checkout), so a
     # worktree whose branch predates it is still checked, not wrongly blocked.
+    # It reads the reviewer list from the pushed work tree itself, like
+    # /prepush, review-marker.sh and the skip script do.
     reviewers_script="scripts/pre-push-reviewers.sh"
     hook_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
     missing=$(bash "$hook_repo/scripts/check-review-markers.sh" HEAD 2>/dev/null)

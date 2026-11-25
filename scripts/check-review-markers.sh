@@ -11,9 +11,11 @@
 #   2  the reviewer list is missing/empty/corrupt (fail closed: can't tell what gates)
 #
 # Markers live in the CURRENT work tree's tmp/ (each git worktree has its own),
-# so run it from the work tree being pushed. The reviewer list and review base
-# come from the scripts next to this one, so the Claude Code gate can run its
-# own copy against a worktree whose branch predates these scripts. Shared by the Claude Code push gate
+# so run it from the work tree being pushed. The reviewer list and the review
+# base come from that work tree's scripts/ too, the same list its /prepush,
+# review-marker.sh and skip script use; the copies next to this script are only
+# a fallback, for when the Claude Code gate runs its own copy against a
+# worktree whose branch predates review-base.sh. Shared by the Claude Code push gate
 # (.claude/hooks/agent-bash-gate.sh) and the git backstop (.githooks/pre-push),
 # so the two can't drift. Marker scheme: keep in sync with
 # .claude/hooks/review-marker.sh and scripts/skip-pre-push-review.sh.
@@ -21,6 +23,7 @@
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || exit 2
 cd "$(git rev-parse --show-toplevel)" 2>/dev/null || exit 2
+helper() { if [ -f "scripts/$1" ]; then echo "scripts/$1"; else echo "$here/$1"; fi; }
 
 sha=$(git rev-parse --verify --quiet "${1:-HEAD}^{commit}" 2>/dev/null) || {
   echo "check-review-markers: can't resolve '${1:-HEAD}' to a commit." >&2
@@ -29,13 +32,13 @@ sha=$(git rev-parse --verify --quiet "${1:-HEAD}^{commit}" 2>/dev/null) || {
 
 # Nothing to review when the commit adds nothing beyond the base. No base
 # resolvable -> fail safe and check.
-if base=$(bash "$here/review-base.sh" 2>/dev/null) \
+if base=$(bash "$(helper review-base.sh)" 2>/dev/null) \
    && [ -z "$(git rev-list "${base}..${sha}" 2>/dev/null)" ]; then
   exit 0
 fi
 
 # Validate each name for filename-safety before building a marker path.
-reviewers=$(bash "$here/pre-push-reviewers.sh" 2>/dev/null | grep -E '^[A-Za-z0-9._-]+$')
+reviewers=$(bash "$(helper pre-push-reviewers.sh)" 2>/dev/null | grep -E '^[A-Za-z0-9._-]+$')
 if [ -z "$reviewers" ]; then
   echo "check-review-markers: scripts/pre-push-reviewers.sh produced no valid reviewer names (missing, unreadable, empty, or corrupt)." >&2
   exit 2
