@@ -159,7 +159,7 @@ Markdown is then served only when the request asks for it: `Accept: text/markdow
 To run the negotiation as one step of a larger Worker, use `createMdResponder(options)`. It takes the same options and returns a plain `(request, env) => Promise<Response>`:
 
 ```ts
-import { createMdResponder } from "@wave-rf/cloudflare-md-router";
+import { createMdResponder, type MdRouterEnv } from "@wave-rf/cloudflare-md-router";
 
 const respond = createMdResponder({ vary: true });
 export default {
@@ -167,7 +167,7 @@ export default {
     new URL(request.url).pathname.startsWith("/api/")
       ? Response.json({ ok: true }) // your own routes here
       : respond(request, env),
-};
+} satisfies ExportedHandler<MdRouterEnv>;
 ```
 
 ## Dev loop (`cloudflare-md-router dev`)
