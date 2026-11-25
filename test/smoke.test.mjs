@@ -32,6 +32,11 @@ const until = async (cond, what, ms = 20000) => {
     await sleep(50);
   }
 };
+// The CLI logs "watching … — wrangler serves …" once its watchers are up. That is after wrangler
+// spawns (its pid file can appear first) and, in a git work tree, after `git check-ignore` runs:
+// an edit made before the line can go unseen. Wait for it before editing.
+const serving = (dev) =>
+  until(() => /wrangler serves http/.test(dev.log()), "the watchers to start");
 const hasPm = (pm) => spawnSync(pm, ["--version"], { stdio: "ignore" }).status === 0;
 const PMS = ["npm", "pnpm"].map((pm) => [pm, hasPm(pm) ? false : `${pm} is not on PATH`]);
 let nextPort = 49310;
@@ -254,6 +259,7 @@ test("a wrangler that ignores SIGTERM is SIGKILLed, and dev waits for it and for
   writeFileSync(join(site.logs, "stubborn"), "");
   const dev = startDev(t, site, ["--build", "node build.mjs"]);
   await until(() => has(site, "wrangler.pid"), "wrangler to start");
+  await serving(dev);
   writeFileSync(join(site.root, "src/page.txt"), "SLOW"); // a rebuild that never finishes
   await until(() => read(site, "build.pids").trim().split("\n").length === 2, "the rebuild");
   dev.child.kill("SIGINT");
@@ -297,6 +303,7 @@ for (const [label, cache, git, removed] of [
       );
       await until(() => has(site, "wrangler.pid"), "wrangler to start");
       assert.equal(existsSync(join(site.root, cache)), !removed, "the build wrote its cache");
+      await serving(dev);
       assert.match(dev.log(), /not watching --watch config\/site\.json: .*watch its directory/);
       assert.match(dev.log(), /not watching --watch nope: no such directory/);
       assert.match(dev.log(), /watching \.\/, astro/);
@@ -463,6 +470,7 @@ for (const git of [false, true]) {
       if (git) assert.equal(spawnSync("git", ["init", "-q", site.root]).status, 0);
       const dev = startDev(t, site, ["--build", "node build.mjs"], { FIXTURE_VITE: "1" });
       await until(() => has(site, "wrangler.pid"), "wrangler to start");
+      await serving(dev);
       const builds = () => read(site, "build.pids").trim().split("\n").length;
       writeFileSync(join(site.root, "src/page.txt"), "v2");
       await until(() => existsSync(join(site.out, "sub", "v2.html")), "v2 to land");
