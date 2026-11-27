@@ -224,7 +224,11 @@ const revalidate = { accept: "text/markdown", "if-none-match": '"v1"' };
 test("a twin's 304 to the client's conditional request is returned, not replaced by HTML", async () => {
   for (const vary of [true, false]) {
     const stub = recordingAssets(
-      () => new Response(null, { status: 304, headers: { etag: '"v1"' } })
+      () =>
+        new Response(null, {
+          status: 304,
+          headers: { etag: '"v1"', "content-type": "text/plain" },
+        })
     );
     const res = await createMdRouter({ vary }).fetch(get("https://x.test/a", revalidate), {
       ASSETS: stub,
@@ -232,6 +236,7 @@ test("a twin's 304 to the client's conditional request is returned, not replaced
     assert.equal(res.status, 304, `vary ${vary}`);
     assert.equal(res.headers.get("vary"), vary ? "Accept" : null);
     assert.equal(res.headers.get("etag"), '"v1"');
+    assert.equal(res.headers.get("content-type"), "text/markdown; charset=utf-8");
     // The conditional header reached the twin, and there was no HTML fallback fetch.
     assert.deepEqual(stub.calls, [{ pathname: "/a.md", inm: '"v1"' }]);
   }
@@ -273,4 +278,21 @@ test("a browser request gets the HTML page, plus only the documented Link", asyn
     stub.calls.map((c) => c.pathname),
     ["/a"]
   );
+});
+
+test("a 304 without a Content-Type is not given one", async () => {
+  const stub = recordingAssets(() => new Response(null, { status: 304 }));
+  const res = await createMdRouter().fetch(get("https://x.test/a", revalidate), { ASSETS: stub });
+  assert.equal(res.status, 304);
+  assert.equal(res.headers.get("content-type"), null);
+});
+
+test("checkTwin counts a twin's 304 as present, so the Link is still advertised", async () => {
+  const stub = recordingAssets(() => new Response(null, { status: 304 }));
+  const res = await createMdRouter({ checkTwin: true }).fetch(
+    get("https://x.test/a", { accept: "text/html", "if-none-match": '"v1"' }),
+    { ASSETS: stub }
+  );
+  assert.equal(res.status, 200);
+  assert.equal(links(res), '</a.md>; rel="alternate"; type="text/markdown"');
 });
