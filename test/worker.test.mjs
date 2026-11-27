@@ -324,7 +324,8 @@ test("If-None-Match: * matches an existing twin, but a missing twin still falls 
 
   const miss = assetWorker({ twin: false });
   const fallback = await createMdRouter().fetch(mdGet("*"), { ASSETS: miss });
-  assert.equal(fallback.status, 304 === fallback.status ? 304 : 200);
+  assert.equal(fallback.status, 200);
+  assert.equal(await fallback.text(), "<p>a</p>");
   assert.equal(fallback.headers.get("content-type"), "text/html");
   assert.deepEqual(
     miss.calls.map((c) => c.pathname),

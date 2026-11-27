@@ -310,16 +310,21 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
     if (!mdResponse.ok) {
       return withSocialImages(withVary(await env.ASSETS.fetch(request)), url);
     }
-    // Static-asset hosts may type a `.md` file as text/plain or octet-stream.
     if (noneMatch(request.headers.get("If-None-Match"), mdResponse.headers.get("ETag"))) {
       // The twin exists (ok), so its own ETag is trustworthy: answer the
-      // revalidation here instead of re-sending the body.
-      await mdResponse.body?.cancel();
+      // revalidation here instead of re-sending the body. A body that has
+      // already errored rejects its cancel; that must not fail the answer.
+      try {
+        await mdResponse.body?.cancel();
+      } catch {
+        // The twin's body is discarded either way.
+      }
       const notModified = new Response(null, { status: 304, headers: mdResponse.headers });
       notModified.headers.delete("Content-Length");
       notModified.headers.set("Content-Type", "text/markdown; charset=utf-8");
       return withVary(notModified);
     }
+    // Static-asset hosts may type a `.md` file as text/plain or octet-stream.
     const markdown = new Response(mdResponse.body, mdResponse);
     markdown.headers.set("Content-Type", "text/markdown; charset=utf-8");
     return withVary(markdown);
