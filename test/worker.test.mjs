@@ -316,6 +316,31 @@ test("If-None-Match uses weak comparison, in both directions, and over a list", 
   assert.equal(res.status, 304);
 });
 
+test("a matching revalidation still gets its 304 when the twin's body has already errored", async () => {
+  // Cancelling an errored stream rejects with its error; the 304 must not.
+  const ASSETS = {
+    fetch: async (req) => {
+      const { pathname } = new URL(req.url);
+      if (pathname === "/a.md") {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.error(new Error("stream failed"));
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: { etag: ETAG_TWIN, "content-type": "text/plain" },
+        });
+      }
+      return new Response("<p>a</p>", { headers: { "content-type": "text/html" } });
+    },
+  };
+  const res = await createMdRouter().fetch(mdGet(ETAG_TWIN), { ASSETS });
+  assert.equal(res.status, 304);
+  assert.equal(res.body, null);
+  assert.equal(res.headers.get("content-type"), "text/markdown; charset=utf-8");
+});
+
 test("If-None-Match: * matches an existing twin, but a missing twin still falls back to HTML", async () => {
   const hit = assetWorker();
   const res = await createMdRouter().fetch(mdGet("*"), { ASSETS: hit });
