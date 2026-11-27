@@ -27,7 +27,7 @@ export interface MdRouterOptions {
    *  responses are untouched. Default: `true`. */
   advertiseTwin?: boolean;
   /** Append `Vary: Accept` to the responses this worker negotiates on the
-   *  `Accept` header (the `.md` twin or its `304`, the HTML fallback when the twin is
+   *  `Accept` header (the `.md` twin, the HTML fallback when the twin is
    *  missing, and the normal HTML page), so a cache that honors `Vary`
    *  doesn't serve the HTML representation to a client that asked for
    *  markdown — or vice-versa (RFC 9110 §12.5.5). It matters where something
@@ -49,7 +49,7 @@ export interface MdRouterOptions {
    *  @see https://developers.cloudflare.com/workers/cache/#content-negotiation-with-vary */
   vary?: boolean;
   /** Before advertising a page's `.md` twin in the `Link` header, fetch it from
-   *  `ASSETS` and advertise it only when it exists (a `2xx` reply, or a `304` to the client's own conditional request). Costs one
+   *  `ASSETS` and advertise it only when it exists (a `2xx` reply). Costs one
    *  extra local asset lookup per HTML page; worth it when some routes (error
    *  pages, dynamic outcomes) have no twin and an agent following the link
    *  would land on an error. Has no effect when `advertiseTwin` is `false`.
@@ -90,10 +90,9 @@ const defaultMdPathFor = (pathname: string): string => {
 /** Build a Cloudflare Workers fetch handler that serves the `.md` twin of
  *  a static page when the request looks like an LLM fetcher (known bot UA
  *  or `Accept: text/markdown`), falling back to the HTML response if the
- *  `.md` twin doesn't exist (any non-ok reply). A `304 Not Modified` from the
- *  twin, answering the client's own conditional request, is not a missing twin:
- *  it is returned (typed `text/markdown`, with `Vary: Accept` when `vary` is on)
- *  rather than replaced by the HTML.
+ *  `.md` twin doesn't exist (any non-ok reply). The twin is fetched without the
+ *  client's conditional headers (`If-None-Match` and the like), so a markdown
+ *  request always gets the full twin or the HTML fallback, never a `304`.
  *
  *  Pass through unchanged for non-GET, requests with a file extension,
  *  and "normal" browser requests — though the normal HTML page response also
@@ -197,16 +196,6 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
       .transform(response);
   };
 
-  // Static-asset hosts may type a `.md` file as text/plain or octet-stream.
-  // Wraps because an asset response's headers are immutable.
-  const asMarkdown = (twin: Response, always: boolean): Response => {
-    const out = new Response(twin.body, twin);
-    if (always || out.headers.has("Content-Type")) {
-      out.headers.set("Content-Type", "text/markdown; charset=utf-8");
-    }
-    return out;
-  };
-
   const encodePath = (path: string): string =>
     path
       .split("/")
@@ -225,11 +214,28 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
     const wantsMarkdown =
       acceptTokens.some((tok) => accept.includes(tok)) || (botUa !== false && botUa.test(ua));
     const mdPath = mdPathFor(url.pathname);
-    const fetchTwin = () => env.ASSETS.fetch(new Request(new URL(mdPath, url.origin), request));
-    // The probe carries the client's conditional headers too, so a current twin may answer 304.
+    // The twin is fetched WITHOUT the client's validators. The asset worker
+    // matches `If-None-Match` against whatever the path resolves to, and with
+    // `not_found_handling: "404-page"` a missing twin resolves to the 404 page,
+    // so a client holding that page's ETag would get a 304 for a twin that does
+    // not exist. Without validators the answer is a full 200 or a non-ok.
+    const fetchTwin = () => {
+      const twinRequest = new Request(new URL(mdPath, url.origin), request);
+      for (const name of [
+        "If-None-Match",
+        "If-Modified-Since",
+        "If-Match",
+        "If-Unmodified-Since",
+        "If-Range",
+      ]) {
+        twinRequest.headers.delete(name);
+      }
+      return env.ASSETS.fetch(twinRequest);
+    };
     const twinExists = async () => {
       const probe = await fetchTwin();
-      return probe.ok || probe.status === 304;
+      await probe.body?.cancel();
+      return probe.ok;
     };
 
     if (!wantsMarkdown) {
@@ -268,19 +274,13 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
 
     const mdResponse = await fetchTwin();
 
-    // A 304 is the twin answering the client's own conditional headers
-    // (`If-None-Match` / `If-Modified-Since`, carried over by `fetchTwin`): its
-    // cached Markdown is current. Return it, or the client's cache would swap
-    // Markdown for the HTML fallback. No further fetch.
-    // Its headers update the client's cached copy (RFC 9111 §3.2), so it is
-    // typed like the 200 twin, but only if it carries a Content-Type at all.
-    if (mdResponse.status === 304) {
-      return withVary(asMarkdown(mdResponse, false));
-    }
     if (!mdResponse.ok) {
       return withSocialImages(withVary(await env.ASSETS.fetch(request)), url);
     }
-    return withVary(asMarkdown(mdResponse, true));
+    // Static-asset hosts may type a `.md` file as text/plain or octet-stream.
+    const markdown = new Response(mdResponse.body, mdResponse);
+    markdown.headers.set("Content-Type", "text/markdown; charset=utf-8");
+    return withVary(markdown);
   };
 }
 
