@@ -18,7 +18,7 @@ If you're building a docs site that already emits a per-page raw-markdown twin (
 
 The twin is fetched without the client's `If-None-Match` / `If-Modified-Since`, so a markdown request gets the full twin, never a `304` for it ([#27](https://github.com/Wave-RF/cloudflare-md-router/issues/27) tracks answering a matching revalidation with a `304` from the worker). When the twin is missing, the HTML fallback is fetched with the client's original request and can still revalidate to a `304`. A twin `304` can't be passed on: under `not_found_handling: "404-page"` a missing twin resolves to the 404 page, so a client holding that page's ETag would get a `304` for a twin that doesn't exist. Treating a twin `304` as a miss instead would serve the HTML page to a client revalidating its cached markdown.
 
-The HTML fallback relies on a missing twin answering non-ok, as it does with `not_found_handling: "404-page"` or `"none"`. With `"single-page-application"`, a missing twin resolves to `/index.html` with a `200` and is served as markdown, and `checkTwin` advertises a twin that doesn't exist.
+The HTML fallback needs a missing twin to answer non-ok, so `not_found_handling` must be `"404-page"` or `"none"`. With `"single-page-application"`, a missing twin resolves to `/index.html` with a `200` and is served as markdown, and `checkTwin` advertises a twin that doesn't exist.
 
 On the normal HTML page response, the worker also adds an [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) `Link` header so an agent can discover the markdown twin from a plain GET, without sniffing the User-Agent or guessing the right `Accept`:
 
@@ -82,6 +82,8 @@ Configure your `wrangler.jsonc` with an ASSETS binding pointing at your built st
   }
 }
 ```
+
+Keep `not_found_handling` at `"404-page"` or `"none"` (the default): the HTML fallback needs a missing twin to answer non-ok, and `"single-page-application"` answers it with `/index.html` and a `200` (see [Behavior](#behavior)).
 
 `run_worker_first: true` is the simplest setting: the worker sees every request before Cloudflare's static-asset matcher does. (Without it, the worker only ever runs on 404s.) The catch is that every JS, CSS and image request also invokes the Worker, only for the router to pass it through, and each invocation is billed and adds a little latency.
 
