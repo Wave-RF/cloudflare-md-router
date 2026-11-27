@@ -90,7 +90,9 @@ const defaultMdPathFor = (pathname: string): string => {
 /** Build a Cloudflare Workers fetch handler that serves the `.md` twin of
  *  a static page when the request looks like an LLM fetcher (known bot UA
  *  or `Accept: text/markdown`), falling back to the HTML response if the
- *  `.md` twin doesn't exist (any non-ok reply).
+ *  `.md` twin doesn't exist (any non-ok reply). A `304 Not Modified` from the
+ *  twin, answering the client's own conditional request, is not a missing twin:
+ *  it is returned as-is rather than replaced by the HTML.
  *
  *  Pass through unchanged for non-GET, requests with a file extension,
  *  and "normal" browser requests — though the normal HTML page response also
@@ -250,6 +252,13 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
 
     const mdResponse = await fetchTwin();
 
+    // A 304 is the twin answering the client's own conditional headers
+    // (`If-None-Match` / `If-Modified-Since`, carried over by `fetchTwin`): its
+    // cached Markdown is current. Return it, or the client's cache would swap
+    // Markdown for the HTML fallback. No further fetch.
+    if (mdResponse.status === 304) {
+      return withVary(mdResponse);
+    }
     if (!mdResponse.ok) {
       return withSocialImages(withVary(await env.ASSETS.fetch(request)), url);
     }

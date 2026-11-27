@@ -204,3 +204,73 @@ test("with botUserAgents: false a missing twin still falls back to HTML on an Ac
   );
   assert.equal(await res.text(), "<p>b</p>");
 });
+
+// A stub ASSETS that records every request it gets (path + conditional headers) and answers with
+// canned responses; `twin` is what the `.md` path returns.
+function recordingAssets(twin) {
+  const calls = [];
+  return {
+    calls,
+    fetch: async (req) => {
+      const { pathname } = new URL(req.url);
+      calls.push({ pathname, inm: req.headers.get("if-none-match") });
+      if (pathname === "/a.md") return twin();
+      return new Response("<p>a</p>", { headers: { "content-type": "text/html" } });
+    },
+  };
+}
+const revalidate = { accept: "text/markdown", "if-none-match": '"v1"' };
+
+test("a twin's 304 to the client's conditional request is returned, not replaced by HTML", async () => {
+  for (const vary of [true, false]) {
+    const stub = recordingAssets(
+      () => new Response(null, { status: 304, headers: { etag: '"v1"' } })
+    );
+    const res = await createMdRouter({ vary }).fetch(get("https://x.test/a", revalidate), {
+      ASSETS: stub,
+    });
+    assert.equal(res.status, 304, `vary ${vary}`);
+    assert.equal(res.headers.get("vary"), vary ? "Accept" : null);
+    assert.equal(res.headers.get("etag"), '"v1"');
+    // The conditional header reached the twin, and there was no HTML fallback fetch.
+    assert.deepEqual(stub.calls, [{ pathname: "/a.md", inm: '"v1"' }]);
+  }
+});
+
+test("a 200 twin is served; a 404 twin falls back to the HTML page", async () => {
+  const ok = recordingAssets(
+    () => new Response("# a", { headers: { "content-type": "text/plain" } })
+  );
+  const md = await createMdRouter().fetch(get("https://x.test/a", revalidate), { ASSETS: ok });
+  assert.equal(md.status, 200);
+  assert.equal(await md.text(), "# a");
+  assert.equal(ok.calls.length, 1);
+
+  const missing = recordingAssets(() => new Response("nope", { status: 404 }));
+  const fb = await createMdRouter().fetch(get("https://x.test/a", revalidate), {
+    ASSETS: missing,
+  });
+  assert.equal(fb.status, 200);
+  assert.equal(fb.headers.get("content-type"), "text/html");
+  assert.equal(await fb.text(), "<p>a</p>");
+  assert.deepEqual(
+    missing.calls.map((c) => c.pathname),
+    ["/a.md", "/a"]
+  );
+});
+
+test("a browser request gets the HTML page, plus only the documented Link", async () => {
+  const stub = recordingAssets(() => new Response("# a"));
+  const res = await createMdRouter().fetch(
+    get("https://x.test/a", { accept: "text/html", "user-agent": "Mozilla/5.0 Safari" }),
+    { ASSETS: stub }
+  );
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), "<p>a</p>");
+  assert.equal(links(res), '</a.md>; rel="alternate"; type="text/markdown"');
+  assert.equal(res.headers.get("vary"), null);
+  assert.deepEqual(
+    stub.calls.map((c) => c.pathname),
+    ["/a"]
+  );
+});
