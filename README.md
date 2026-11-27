@@ -16,9 +16,9 @@ If you're building a docs site that already emits a per-page raw-markdown twin (
 | `User-Agent` matches a known LLM bot (unless `botUserAgents: false`) | `<path>.md`, served as `text/markdown; charset=utf-8` (HTML fallback when the twin is not ok) |
 | Everything else                                | HTML page — plus a `Link` header advertising its `.md` twin |
 
-The twin is fetched without the client's `If-None-Match` / `If-Modified-Since`, so a markdown request gets the full twin, never a `304` for it. When the twin is missing, the HTML fallback is fetched with the client's original request and can still revalidate to a `304`. A twin `304` couldn't be trusted anyway: under `not_found_handling: "404-page"` a missing twin resolves to the 404 page, which also answers a matching ETag with a `304`. And treating a twin `304` as a miss would serve the HTML page to a client revalidating its cached markdown.
+The twin is fetched without the client's `If-None-Match` / `If-Modified-Since`, so a markdown request gets the full twin, never a `304` for it ([#27](https://github.com/Wave-RF/cloudflare-md-router/issues/27) tracks answering a matching revalidation with a `304` from the worker). When the twin is missing, the HTML fallback is fetched with the client's original request and can still revalidate to a `304`. A twin `304` can't be passed on: under `not_found_handling: "404-page"` a missing twin resolves to the 404 page, so a client holding that page's ETag would get a `304` for a twin that doesn't exist. Treating a twin `304` as a miss instead would serve the HTML page to a client revalidating its cached markdown.
 
-The HTML fallback relies on a missing twin answering non-ok, as it does with `not_found_handling: "404-page"` or `"none"`. With `"single-page-application"`, a missing twin resolves to `/index.html` with a `200` and is served as markdown.
+The HTML fallback relies on a missing twin answering non-ok, as it does with `not_found_handling: "404-page"` or `"none"`. With `"single-page-application"`, a missing twin resolves to `/index.html` with a `200` and is served as markdown, and `checkTwin` advertises a twin that doesn't exist.
 
 On the normal HTML page response, the worker also adds an [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) `Link` header so an agent can discover the markdown twin from a plain GET, without sniffing the User-Agent or guessing the right `Accept`:
 
@@ -34,7 +34,7 @@ The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBo
 
 Three more opt-in features, all off by default:
 
-- `checkTwin: true` fetches the `.md` twin from `ASSETS` (the same validator-free request a markdown request makes) before advertising it, so a route with no twin (an error page, say) gets no dead `Link`. It costs one extra local asset lookup per HTML page.
+- `checkTwin: true` fetches the `.md` twin from `ASSETS` (the same request a markdown request makes, without the client's `If-None-Match` / `If-Modified-Since`) before advertising it, so a route with no twin (an error page, say) gets no dead `Link`. It costs one extra local asset lookup per HTML page.
 - `advertiseLlmsTxt: true` (or a path) adds `Link: </llms.txt>; rel="alternate"; type="text/plain"` to HTML pages.
 - `canonicalOrigin: "https://example.com"` rewrites absolute `og:image` / `twitter:image` URLs under that origin to the origin being browsed when the request host differs (a preview deploy), via `HTMLRewriter`. `canonical` and `og:url` are left alone.
 
