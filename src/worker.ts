@@ -96,12 +96,11 @@ const defaultMdPathFor = (pathname: string): string => {
  *  `.md` twin doesn't exist (any non-ok reply). The twin is fetched without the
  *  client's `If-None-Match` / `If-Modified-Since`, so the asset worker can't
  *  answer with a `304` for a twin that doesn't exist. A markdown client
- *  revalidating a twin
- *  that exists gets a `304` answered by the worker (weak comparison of
- *  `If-None-Match`, or `*`, with the twin's `ETag`; `If-Modified-Since` alone
- *  never yields one); otherwise it gets the full twin, or, when the twin is
- *  missing, the HTML fallback fetched with the original request (which can
- *  still revalidate to a `304` of its own).
+ *  revalidating a twin that exists gets a `304` answered by the worker (weak
+ *  comparison of `If-None-Match`, or `*`, with the twin's `ETag`;
+ *  `If-Modified-Since` alone never yields one); otherwise it gets the full
+ *  twin, or, when the twin is missing, the HTML fallback fetched with the
+ *  original request (which can still revalidate to a `304` of its own).
  *
  *  Pass through unchanged for non-GET, requests with a file extension,
  *  and "normal" browser requests — though the normal HTML page response also
