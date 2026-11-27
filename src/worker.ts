@@ -240,7 +240,14 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
     };
     const twinExists = async () => {
       const probe = await fetchTwin();
-      await probe.body?.cancel();
+      // Only the status is wanted. Cancelling a body whose stream has already
+      // errored rejects with that error, and the page itself was fetched
+      // fine, so a failed cancel must not fail the request.
+      try {
+        await probe.body?.cancel();
+      } catch {
+        // The probe's body is discarded either way.
+      }
       return probe.ok;
     };
 

@@ -74,6 +74,33 @@ test("twin Link is advertised by default, and only when the twin exists with che
   }
 });
 
+test("checkTwin: a probe whose body already errored still decides the Link", async () => {
+  // Cancelling an errored stream rejects with its error; that must not fail the page request.
+  const errored = () =>
+    new ReadableStream({
+      start(controller) {
+        controller.error(new Error("stream failed"));
+      },
+    });
+  for (const [status, want] of [
+    [200, '</a.md>; rel="alternate"; type="text/markdown"'],
+    [404, null],
+  ]) {
+    const ASSETS = {
+      fetch: async (req) => {
+        const { pathname } = new URL(req.url);
+        if (pathname === "/a.md") return new Response(errored(), { status });
+        return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
+      },
+    };
+    const res = await createMdRouter({ checkTwin: true }).fetch(get("https://x.test/a"), {
+      ASSETS,
+    });
+    assert.equal(res.status, 200, `twin ${status}`);
+    assert.equal(links(res), want, `twin ${status}`);
+  }
+});
+
 test("advertiseLlmsTxt adds a text/plain alternate link, independent of the twin link", async () => {
   const env = () => ({ ASSETS: assets({ "/a": html() }) });
   const cases = [
