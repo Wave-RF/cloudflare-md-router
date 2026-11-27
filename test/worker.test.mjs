@@ -211,17 +211,27 @@ test("with botUserAgents: false a missing twin still falls back to HTML on an Ac
 const E404 = '"etag-404"';
 const ETAG_TWIN = '"etag-twin"';
 const ETAG_PAGE = '"etag-page"';
+const VALIDATORS = [
+  "if-none-match",
+  "if-modified-since",
+  "if-match",
+  "if-unmodified-since",
+  "if-range",
+];
 function assetWorker({ twin = true } = {}) {
   const calls = [];
+  const validators = []; // which conditional headers each request carried
   const files = {
     "/a": { body: "<p>a</p>", type: "text/html", etag: ETAG_PAGE },
     ...(twin && { "/a.md": { body: "# a", type: "text/plain", etag: ETAG_TWIN } }),
   };
   return {
     calls,
+    validators,
     fetch: async (req) => {
       const { pathname } = new URL(req.url);
       calls.push({ pathname, inm: req.headers.get("if-none-match") });
+      validators.push(VALIDATORS.filter((h) => req.headers.has(h)));
       const file = files[pathname];
       const resolved = file ?? { body: "<p>404</p>", type: "text/html", etag: E404 };
       const headers = { "content-type": resolved.type, etag: resolved.etag };
@@ -258,20 +268,23 @@ test("a markdown client holding the 404 page's ETag gets the HTML fallback, not 
   ]);
 });
 
-test("every client validator is stripped from the twin request", async () => {
-  const stub = assetWorker();
+test("only If-None-Match and If-Modified-Since are stripped from the twin request", async () => {
+  const stub = assetWorker({ twin: false });
   await createMdRouter().fetch(
     get("https://x.test/a", {
       accept: "text/markdown",
-      "if-none-match": ETAG_TWIN,
+      "if-none-match": E404,
       "if-modified-since": "Wed, 21 Oct 2015 07:28:00 GMT",
-      "if-match": ETAG_TWIN,
+      "if-match": E404,
       "if-unmodified-since": "Wed, 21 Oct 2015 07:28:00 GMT",
-      "if-range": ETAG_TWIN,
+      "if-range": E404,
     }),
     { ASSETS: stub }
   );
-  assert.deepEqual(stub.calls, [{ pathname: "/a.md", inm: null }]);
+  const [twin, fallback] = stub.validators;
+  assert.deepEqual(twin, ["if-match", "if-unmodified-since", "if-range"]);
+  // The HTML fallback is the original request, validators intact.
+  assert.deepEqual(fallback, VALIDATORS);
 });
 
 test("checkTwin: no Link when the twin is missing, even for a client holding the 404 ETag", async () => {

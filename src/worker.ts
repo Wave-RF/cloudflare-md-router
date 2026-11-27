@@ -91,8 +91,10 @@ const defaultMdPathFor = (pathname: string): string => {
  *  a static page when the request looks like an LLM fetcher (known bot UA
  *  or `Accept: text/markdown`), falling back to the HTML response if the
  *  `.md` twin doesn't exist (any non-ok reply). The twin is fetched without the
- *  client's conditional headers (`If-None-Match` and the like), so a markdown
- *  request always gets the full twin or the HTML fallback, never a `304`.
+ *  client's `If-None-Match` / `If-Modified-Since`, so a markdown request gets
+ *  the full twin, never a `304` for it; when the twin is missing, the HTML
+ *  fallback is fetched with the original request and can still revalidate to
+ *  a `304`.
  *
  *  Pass through unchanged for non-GET, requests with a file extension,
  *  and "normal" browser requests — though the normal HTML page response also
@@ -214,20 +216,17 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
     const wantsMarkdown =
       acceptTokens.some((tok) => accept.includes(tok)) || (botUa !== false && botUa.test(ua));
     const mdPath = mdPathFor(url.pathname);
-    // The twin is fetched WITHOUT the client's validators. The asset worker
-    // matches `If-None-Match` against whatever the path resolves to, and with
-    // `not_found_handling: "404-page"` a missing twin resolves to the 404 page,
-    // so a client holding that page's ETag would get a 304 for a twin that does
-    // not exist. Without validators the answer is a full 200 or a non-ok.
+    // The twin is fetched WITHOUT `If-None-Match` / `If-Modified-Since`, the
+    // two that can produce a 304. The asset worker matches them against
+    // whatever the path resolves to, and with `not_found_handling: "404-page"`
+    // a missing twin resolves to the 404 page, so a client holding that page's
+    // ETag would get a 304 for a twin that does not exist. Without them the
+    // answer is a full 200 or a non-ok. The other conditionals stay: stripping
+    // `If-Range` would turn a conditional range request into an unconditional
+    // one, and a failed `If-Match` (412) is non-ok, so it falls back anyway.
     const fetchTwin = () => {
       const twinRequest = new Request(new URL(mdPath, url.origin), request);
-      for (const name of [
-        "If-None-Match",
-        "If-Modified-Since",
-        "If-Match",
-        "If-Unmodified-Since",
-        "If-Range",
-      ]) {
+      for (const name of ["If-None-Match", "If-Modified-Since"]) {
         twinRequest.headers.delete(name);
       }
       return env.ASSETS.fetch(twinRequest);

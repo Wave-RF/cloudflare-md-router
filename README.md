@@ -16,6 +16,8 @@ If you're building a docs site that already emits a per-page raw-markdown twin (
 | `User-Agent` matches a known LLM bot (unless `botUserAgents: false`) | `<path>.md`, served as `text/markdown; charset=utf-8` (HTML fallback when the twin is not ok) |
 | Everything else                                | HTML page — plus a `Link` header advertising its `.md` twin |
 
+The twin is fetched without the client's `If-None-Match` / `If-Modified-Since`: under `not_found_handling: "404-page"` a missing twin resolves to the 404 page, and a client holding that page's ETag would otherwise get a `304` for a twin that doesn't exist. A markdown request therefore gets the full twin or the HTML fallback (which keeps the client's validators). The `checkTwin` probe uses the same request.
+
 On the normal HTML page response, the worker also adds an [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) `Link` header so an agent can discover the markdown twin from a plain GET, without sniffing the User-Agent or guessing the right `Accept`:
 
 ```http
@@ -31,8 +33,6 @@ The included bot list covers the common ones: GPTBot, ChatGPT-User, OAI-SearchBo
 Three more opt-in features, all off by default:
 
 - `checkTwin: true` fetches the `.md` twin from `ASSETS` before advertising it, so a route with no twin (an error page, say) gets no dead `Link`. It costs one extra local asset lookup per HTML page.
-
-The twin is always fetched without the client's conditional headers (`If-None-Match`, `If-Modified-Since`, …), so a markdown request gets the full twin or the HTML fallback, never a `304` for a twin that may not exist.
 - `advertiseLlmsTxt: true` (or a path) adds `Link: </llms.txt>; rel="alternate"; type="text/plain"` to HTML pages.
 - `canonicalOrigin: "https://example.com"` rewrites absolute `og:image` / `twitter:image` URLs under that origin to the origin being browsed when the request host differs (a preview deploy), via `HTMLRewriter`. `canonical` and `og:url` are left alone.
 
