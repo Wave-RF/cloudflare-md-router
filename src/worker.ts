@@ -53,6 +53,9 @@ export interface MdRouterOptions {
    *  extra local asset lookup per HTML page; worth it when some routes (error
    *  pages, dynamic outcomes) have no twin and an agent following the link
    *  would land on an error. Has no effect when `advertiseTwin` is `false`.
+   *  A missing twin must answer non-ok, as it does under `not_found_handling:
+   *  "404-page"` or `"none"`: under `"single-page-application"` it resolves to
+   *  `/index.html` with a `200`, so every twin is advertised.
    *  Default: `false`. */
   checkTwin?: boolean;
   /** Also advertise an `llms.txt` index on each HTML page via
@@ -90,7 +93,11 @@ const defaultMdPathFor = (pathname: string): string => {
 /** Build a Cloudflare Workers fetch handler that serves the `.md` twin of
  *  a static page when the request looks like an LLM fetcher (known bot UA
  *  or `Accept: text/markdown`), falling back to the HTML response if the
- *  `.md` twin doesn't exist (any non-ok reply).
+ *  `.md` twin doesn't exist (any non-ok reply). The twin is fetched without the
+ *  client's `If-None-Match` / `If-Modified-Since`, so a markdown request gets
+ *  the full twin, never a `304` for it; when the twin is missing, the HTML
+ *  fallback is fetched with the original request and can still revalidate to
+ *  a `304`.
  *
  *  Pass through unchanged for non-GET, requests with a file extension,
  *  and "normal" browser requests — though the normal HTML page response also
@@ -104,7 +111,9 @@ const defaultMdPathFor = (pathname: string): string => {
  *  Requires an `ASSETS` Fetcher binding in your `wrangler.jsonc`, and the Worker
  *  must run before the static-asset matcher for page routes (`run_worker_first`:
  *  `true` for every request, or an array of route patterns such as the one below
- *  that keeps asset requests off the Worker):
+ *  that keeps asset requests off the Worker). `not_found_handling` must be
+ *  `"404-page"` or `"none"`: under `"single-page-application"` a missing twin
+ *  answers `200`, so it is served as markdown with no HTML fallback.
  *  ```jsonc
  *  {
  *    "main": "worker/index.ts",
@@ -212,7 +221,35 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
     const wantsMarkdown =
       acceptTokens.some((tok) => accept.includes(tok)) || (botUa !== false && botUa.test(ua));
     const mdPath = mdPathFor(url.pathname);
-    const fetchTwin = () => env.ASSETS.fetch(new Request(new URL(mdPath, url.origin), request));
+    // The twin is fetched WITHOUT `If-None-Match` / `If-Modified-Since`, so the
+    // answer is a full 200 or a non-ok, never a 304. The asset worker matches
+    // `If-None-Match` against whatever the path resolves to, and with
+    // `not_found_handling: "404-page"` a missing twin resolves to the 404 page,
+    // so a 304 for the twin can't be trusted; treating it as a miss would serve
+    // the HTML to a client revalidating its cached markdown. `If-Modified-Since`
+    // is the other validator that can yield a 304 (RFC 9110), so it goes too, for
+    // any other `Fetcher` behind `ASSETS`. The other conditionals stay: stripping
+    // `If-Range` would turn a conditional range request into an unconditional
+    // one, and a failed `If-Match` (412) is non-ok, so it falls back anyway.
+    const fetchTwin = () => {
+      const twinRequest = new Request(new URL(mdPath, url.origin), request);
+      for (const name of ["If-None-Match", "If-Modified-Since"]) {
+        twinRequest.headers.delete(name);
+      }
+      return env.ASSETS.fetch(twinRequest);
+    };
+    const twinExists = async () => {
+      const probe = await fetchTwin();
+      // Only the status is wanted. Cancelling a body whose stream has already
+      // errored rejects with that error, and the page itself was fetched
+      // fine, so a failed cancel must not fail the request.
+      try {
+        await probe.body?.cancel();
+      } catch {
+        // The probe's body is discarded either way.
+      }
+      return probe.ok;
+    };
 
     if (!wantsMarkdown) {
       const response = await env.ASSETS.fetch(request);
@@ -224,7 +261,7 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
         return withVary(response);
       }
       const advertiseMd =
-        advertiseTwin && response.status === 200 && (!checkTwin || (await fetchTwin()).ok);
+        advertiseTwin && response.status === 200 && (!checkTwin || (await twinExists()));
       const advertiseLlms = llmsTxtPath !== undefined && response.status === 200;
       // `new Response(body, response)` is the only way to add a header to an
       // otherwise-immutable asset response. A relative URI-Reference target is

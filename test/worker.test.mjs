@@ -74,6 +74,33 @@ test("twin Link is advertised by default, and only when the twin exists with che
   }
 });
 
+test("checkTwin: a probe whose body already errored still decides the Link", async () => {
+  // Cancelling an errored stream rejects with its error; that must not fail the page request.
+  const errored = () =>
+    new ReadableStream({
+      start(controller) {
+        controller.error(new Error("stream failed"));
+      },
+    });
+  for (const [status, want] of [
+    [200, '</a.md>; rel="alternate"; type="text/markdown"'],
+    [404, null],
+  ]) {
+    const ASSETS = {
+      fetch: async (req) => {
+        const { pathname } = new URL(req.url);
+        if (pathname === "/a.md") return new Response(errored(), { status });
+        return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
+      },
+    };
+    const res = await createMdRouter({ checkTwin: true }).fetch(get("https://x.test/a"), {
+      ASSETS,
+    });
+    assert.equal(res.status, 200, `twin ${status}`);
+    assert.equal(links(res), want, `twin ${status}`);
+  }
+});
+
 test("advertiseLlmsTxt adds a text/plain alternate link, independent of the twin link", async () => {
   const env = () => ({ ASSETS: assets({ "/a": html() }) });
   const cases = [
@@ -203,4 +230,126 @@ test("with botUserAgents: false a missing twin still falls back to HTML on an Ac
     { ASSETS: assets({ "/b": html("<p>b</p>") }) }
   );
   assert.equal(await res.text(), "<p>b</p>");
+});
+
+// A stub that behaves like the asset worker: a conditional request gets a 304 when `If-None-Match`
+// equals the ETag of whatever the path RESOLVES to, and a missing path resolves to the 404 page
+// (`not_found_handling: "404-page"`), which has its own ETag.
+const E404 = '"etag-404"';
+const ETAG_TWIN = '"etag-twin"';
+const ETAG_PAGE = '"etag-page"';
+const VALIDATORS = [
+  "if-none-match",
+  "if-modified-since",
+  "if-match",
+  "if-unmodified-since",
+  "if-range",
+];
+function assetWorker({ twin = true } = {}) {
+  const calls = [];
+  const validators = []; // which conditional headers each request carried
+  const files = {
+    "/a": { body: "<p>a</p>", type: "text/html", etag: ETAG_PAGE },
+    ...(twin && { "/a.md": { body: "# a", type: "text/plain", etag: ETAG_TWIN } }),
+  };
+  return {
+    calls,
+    validators,
+    fetch: async (req) => {
+      const { pathname } = new URL(req.url);
+      calls.push({ pathname, inm: req.headers.get("if-none-match") });
+      validators.push(VALIDATORS.filter((h) => req.headers.has(h)));
+      const file = files[pathname];
+      const resolved = file ?? { body: "<p>404</p>", type: "text/html", etag: E404 };
+      const headers = { "content-type": resolved.type, etag: resolved.etag };
+      if (req.headers.get("if-none-match") === resolved.etag) {
+        return new Response(null, { status: 304, headers });
+      }
+      return new Response(resolved.body, { status: file ? 200 : 404, headers });
+    },
+  };
+}
+const mdGet = (inm) => get("https://x.test/a", { accept: "text/markdown", "if-none-match": inm });
+const browserGet = (inm) => get("https://x.test/a", { accept: "text/html", "if-none-match": inm });
+
+test("a revalidating markdown client gets the full twin; the twin request carries no validators", async () => {
+  const stub = assetWorker();
+  const res = await createMdRouter({ vary: true }).fetch(mdGet(ETAG_TWIN), { ASSETS: stub });
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), "# a");
+  assert.equal(res.headers.get("content-type"), "text/markdown; charset=utf-8");
+  assert.equal(res.headers.get("vary"), "Accept");
+  assert.deepEqual(stub.calls, [{ pathname: "/a.md", inm: null }]);
+});
+
+test("a markdown client holding the 404 page's ETag gets the HTML fallback, not a 304", async () => {
+  const stub = assetWorker({ twin: false });
+  const res = await createMdRouter().fetch(mdGet(E404), { ASSETS: stub });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "text/html");
+  assert.equal(await res.text(), "<p>a</p>");
+  // The twin without validators, then the page via the original request, validators intact.
+  assert.deepEqual(stub.calls, [
+    { pathname: "/a.md", inm: null },
+    { pathname: "/a", inm: E404 },
+  ]);
+});
+
+test("only If-None-Match and If-Modified-Since are stripped from the twin request", async () => {
+  const stub = assetWorker({ twin: false });
+  await createMdRouter().fetch(
+    get("https://x.test/a", {
+      accept: "text/markdown",
+      "if-none-match": E404,
+      "if-modified-since": "Wed, 21 Oct 2015 07:28:00 GMT",
+      "if-match": E404,
+      "if-unmodified-since": "Wed, 21 Oct 2015 07:28:00 GMT",
+      "if-range": E404,
+    }),
+    { ASSETS: stub }
+  );
+  const [twin, fallback] = stub.validators;
+  assert.deepEqual(twin, ["if-match", "if-unmodified-since", "if-range"]);
+  // The HTML fallback is the original request, validators intact.
+  assert.deepEqual(fallback, VALIDATORS);
+});
+
+test("checkTwin: no Link when the twin is missing, even for a client holding the 404 ETag", async () => {
+  const stub = assetWorker({ twin: false });
+  const res = await createMdRouter({ checkTwin: true }).fetch(browserGet(E404), { ASSETS: stub });
+  assert.equal(res.status, 200);
+  assert.equal(links(res), null);
+});
+
+test("checkTwin: Link when the twin exists, even for a client holding the twin's ETag", async () => {
+  const stub = assetWorker();
+  const res = await createMdRouter({ checkTwin: true }).fetch(browserGet(ETAG_TWIN), {
+    ASSETS: stub,
+  });
+  assert.equal(res.status, 200);
+  assert.equal(links(res), '</a.md>; rel="alternate"; type="text/markdown"');
+  assert.equal(stub.calls.length, 2);
+});
+
+test("a browser's conditional request matching the page's ETag gets the page's 304, untouched", async () => {
+  const stub = assetWorker();
+  const res = await createMdRouter().fetch(browserGet(ETAG_PAGE), { ASSETS: stub });
+  assert.equal(res.status, 304);
+  assert.equal(links(res), null);
+  assert.deepEqual(stub.calls, [{ pathname: "/a", inm: ETAG_PAGE }]);
+});
+
+test("a browser request gets the HTML page, plus only the documented Link", async () => {
+  const stub = assetWorker();
+  const res = await createMdRouter().fetch(
+    get("https://x.test/a", { accept: "text/html", "user-agent": "Mozilla/5.0 Safari" }),
+    { ASSETS: stub }
+  );
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), "<p>a</p>");
+  assert.equal(links(res), '</a.md>; rel="alternate"; type="text/markdown"');
+  assert.deepEqual(
+    stub.calls.map((c) => c.pathname),
+    ["/a"]
+  );
 });
