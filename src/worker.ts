@@ -53,6 +53,9 @@ export interface MdRouterOptions {
    *  extra local asset lookup per HTML page; worth it when some routes (error
    *  pages, dynamic outcomes) have no twin and an agent following the link
    *  would land on an error. Has no effect when `advertiseTwin` is `false`.
+   *  A missing twin must answer non-ok, as it does under `not_found_handling:
+   *  "404-page"` or `"none"`: under `"single-page-application"` it resolves to
+   *  `/index.html` with a `200`, so every twin is advertised.
    *  Default: `false`. */
   checkTwin?: boolean;
   /** Also advertise an `llms.txt` index on each HTML page via
@@ -108,7 +111,9 @@ const defaultMdPathFor = (pathname: string): string => {
  *  Requires an `ASSETS` Fetcher binding in your `wrangler.jsonc`, and the Worker
  *  must run before the static-asset matcher for page routes (`run_worker_first`:
  *  `true` for every request, or an array of route patterns such as the one below
- *  that keeps asset requests off the Worker):
+ *  that keeps asset requests off the Worker). `not_found_handling` must be
+ *  `"404-page"` or `"none"`: under `"single-page-application"` a missing twin
+ *  answers `200`, so it is served as markdown with no HTML fallback.
  *  ```jsonc
  *  {
  *    "main": "worker/index.ts",
