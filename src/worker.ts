@@ -216,12 +216,14 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
     const wantsMarkdown =
       acceptTokens.some((tok) => accept.includes(tok)) || (botUa !== false && botUa.test(ua));
     const mdPath = mdPathFor(url.pathname);
-    // The twin is fetched WITHOUT `If-None-Match` / `If-Modified-Since`, the
-    // two that can produce a 304. The asset worker matches them against
-    // whatever the path resolves to, and with `not_found_handling: "404-page"`
-    // a missing twin resolves to the 404 page, so a client holding that page's
-    // ETag would get a 304 for a twin that does not exist. Without them the
-    // answer is a full 200 or a non-ok. The other conditionals stay: stripping
+    // The twin is fetched WITHOUT `If-None-Match` / `If-Modified-Since`, so the
+    // answer is a full 200 or a non-ok, never a 304. The asset worker matches
+    // `If-None-Match` against whatever the path resolves to, and with
+    // `not_found_handling: "404-page"` a missing twin resolves to the 404 page,
+    // so a 304 for the twin can't be trusted; treating it as a miss would serve
+    // the HTML to a client revalidating its cached markdown. `If-Modified-Since`
+    // is the other validator that can yield a 304 (RFC 9110), so it goes too, for
+    // any other `Fetcher` behind `ASSETS`. The other conditionals stay: stripping
     // `If-Range` would turn a conditional range request into an unconditional
     // one, and a failed `If-Match` (412) is non-ok, so it falls back anyway.
     const fetchTwin = () => {
