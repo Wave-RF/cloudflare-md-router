@@ -265,7 +265,12 @@ function assetWorker({ twin = true } = {}) {
       if (req.headers.get("if-none-match") === resolved.etag) {
         return new Response(null, { status: 304, headers });
       }
-      return new Response(resolved.body, { status: file ? 200 : 404, headers });
+      // Like the asset worker, a full answer carries its Content-Length.
+      const length = String(new TextEncoder().encode(resolved.body).length);
+      return new Response(resolved.body, {
+        status: file ? 200 : 404,
+        headers: { ...headers, "content-length": length },
+      });
     },
   };
 }
@@ -289,6 +294,26 @@ test("a markdown client revalidating with the twin's ETag gets a 304 from the wo
   assert.equal(res.headers.has("content-length"), false);
   assert.equal(res.body, null);
   assert.deepEqual(stub.calls, [{ pathname: "/a.md", inm: null }]);
+});
+
+test("the worker's 304 drops the twin's Content-Length and Content-Range", async () => {
+  // A ranged twin answer (206) still proves the twin exists; its range headers don't belong on a 304.
+  const ASSETS = {
+    fetch: async () =>
+      new Response("# a", {
+        status: 206,
+        headers: {
+          etag: ETAG_TWIN,
+          "content-type": "text/plain",
+          "content-length": "3",
+          "content-range": "bytes 0-2/3",
+        },
+      }),
+  };
+  const res = await createMdRouter().fetch(mdGet(ETAG_TWIN), { ASSETS });
+  assert.equal(res.status, 304);
+  assert.equal(res.headers.has("content-length"), false);
+  assert.equal(res.headers.has("content-range"), false);
 });
 
 test("a bot UA with no Accept and a matching If-None-Match gets the 304", async () => {

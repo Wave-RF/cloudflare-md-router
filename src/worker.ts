@@ -321,6 +321,7 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
       }
       const notModified = new Response(null, { status: 304, headers: mdResponse.headers });
       notModified.headers.delete("Content-Length");
+      notModified.headers.delete("Content-Range");
       notModified.headers.set("Content-Type", "text/markdown; charset=utf-8");
       return withVary(notModified);
     }
