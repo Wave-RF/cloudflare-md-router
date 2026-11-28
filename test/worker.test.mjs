@@ -366,6 +366,22 @@ test("a matching revalidation still gets its 304 when the twin's body has alread
   assert.equal(res.headers.get("content-type"), "text/markdown; charset=utf-8");
 });
 
+test("an entity-tag with a comma inside its quotes still matches", async () => {
+  // ETags are opaque and may contain commas; the list splits only outside quotes.
+  const ASSETS = {
+    fetch: async () =>
+      new Response("# a", { headers: { etag: '"a,b"', "content-type": "text/plain" } }),
+  };
+  for (const inm of ['W/"a,b"', '"x", W/"a,b"', '"a,b" , "y"']) {
+    const res = await createMdRouter().fetch(mdGet(inm), { ASSETS });
+    assert.equal(res.status, 304, inm);
+  }
+  for (const inm of ['"a"', '"b"', '"a", "b"']) {
+    const res = await createMdRouter().fetch(mdGet(inm), { ASSETS });
+    assert.equal(res.status, 200, inm);
+  }
+});
+
 test("If-None-Match: * matches an existing twin, but a missing twin still falls back to HTML", async () => {
   const hit = assetWorker();
   const res = await createMdRouter().fetch(mdGet("*"), { ASSETS: hit });

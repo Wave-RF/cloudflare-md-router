@@ -208,8 +208,26 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
 
   // RFC 9110 §13.1.2 weak comparison of the client's `If-None-Match` with the
   // twin's ETag. Plain string handling (split, trim, strip a leading `W/`): the
-  // header is attacker-controlled, so no regex runs on it.
+  // header is attacker-controlled, so no regex runs on it. An entity-tag is
+  // opaque and may itself contain a comma (`W/"a,b"`), so the list splits only
+  // on commas outside quotes.
   const stripWeak = (tag: string): string => (tag.startsWith("W/") ? tag.slice(2) : tag);
+  const entityTags = (header: string): string[] => {
+    const tags: string[] = [];
+    let quoted = false;
+    let start = 0;
+    for (let i = 0; i < header.length; i++) {
+      const c = header[i];
+      if (c === '"') {
+        quoted = !quoted;
+      } else if (c === "," && !quoted) {
+        tags.push(header.slice(start, i));
+        start = i + 1;
+      }
+    }
+    tags.push(header.slice(start));
+    return tags;
+  };
   const noneMatch = (header: string | null, etag: string | null): boolean => {
     if (header === null || etag === null) {
       return false;
@@ -218,7 +236,7 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
       return true;
     }
     const want = stripWeak(etag.trim());
-    return header.split(",").some((tag) => stripWeak(tag.trim()) === want);
+    return entityTags(header).some((tag) => stripWeak(tag.trim()) === want);
   };
 
   const encodePath = (path: string): string =>
