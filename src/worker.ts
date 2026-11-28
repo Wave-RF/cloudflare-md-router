@@ -235,8 +235,15 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
     if (header.trim() === "*") {
       return true;
     }
+    // An empty ETag is no ETag; empty list elements are ignored (RFC 9110 §5.6.1).
     const want = stripWeak(etag.trim());
-    return entityTags(header).some((tag) => stripWeak(tag.trim()) === want);
+    if (want === "") {
+      return false;
+    }
+    return entityTags(header).some((tag) => {
+      const trimmed = tag.trim();
+      return trimmed !== "" && stripWeak(trimmed) === want;
+    });
   };
 
   const encodePath = (path: string): string =>

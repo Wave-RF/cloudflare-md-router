@@ -366,6 +366,19 @@ test("a matching revalidation still gets its 304 when the twin's body has alread
   assert.equal(res.headers.get("content-type"), "text/markdown; charset=utf-8");
 });
 
+test("an empty ETag never gets a 304, and empty list elements match nothing", async () => {
+  const withEtag = (etag) => ({
+    fetch: async () => new Response("# a", { headers: { etag, "content-type": "text/plain" } }),
+  });
+  for (const inm of ['"a",', '"a", , "b"', ""]) {
+    const res = await createMdRouter().fetch(mdGet(inm), { ASSETS: withEtag("") });
+    assert.equal(res.status, 200, `empty ETag, If-None-Match ${JSON.stringify(inm)}`);
+  }
+  // Empty elements are skipped, not compared: a real tag in the same list still matches.
+  const res = await createMdRouter().fetch(mdGet('"a", , "b"'), { ASSETS: withEtag('"b"') });
+  assert.equal(res.status, 304);
+});
+
 test("an entity-tag with a comma inside its quotes still matches", async () => {
   // ETags are opaque and may contain commas; the list splits only outside quotes.
   const ASSETS = {
