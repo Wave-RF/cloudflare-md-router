@@ -265,21 +265,177 @@ function assetWorker({ twin = true } = {}) {
       if (req.headers.get("if-none-match") === resolved.etag) {
         return new Response(null, { status: 304, headers });
       }
-      return new Response(resolved.body, { status: file ? 200 : 404, headers });
+      // Like the asset worker, a full answer carries its Content-Length.
+      const length = String(new TextEncoder().encode(resolved.body).length);
+      return new Response(resolved.body, {
+        status: file ? 200 : 404,
+        headers: { ...headers, "content-length": length },
+      });
     },
   };
 }
 const mdGet = (inm) => get("https://x.test/a", { accept: "text/markdown", "if-none-match": inm });
 const browserGet = (inm) => get("https://x.test/a", { accept: "text/html", "if-none-match": inm });
 
-test("a revalidating markdown client gets the full twin; the twin request carries no validators", async () => {
+const twinGet = (inm, extra = {}) =>
+  get("https://x.test/a", {
+    accept: "text/markdown",
+    ...(inm && { "if-none-match": inm }),
+    ...extra,
+  });
+
+test("a markdown client revalidating with the twin's ETag gets a 304 from the worker", async () => {
   const stub = assetWorker();
   const res = await createMdRouter({ vary: true }).fetch(mdGet(ETAG_TWIN), { ASSETS: stub });
-  assert.equal(res.status, 200);
-  assert.equal(await res.text(), "# a");
+  assert.equal(res.status, 304);
   assert.equal(res.headers.get("content-type"), "text/markdown; charset=utf-8");
   assert.equal(res.headers.get("vary"), "Accept");
+  assert.equal(res.headers.get("etag"), ETAG_TWIN);
+  assert.equal(res.headers.has("content-length"), false);
+  assert.equal(res.body, null);
   assert.deepEqual(stub.calls, [{ pathname: "/a.md", inm: null }]);
+});
+
+test("the worker's 304 drops the twin's Content-Length and Content-Range", async () => {
+  // A ranged twin answer (206) still proves the twin exists; its range headers don't belong on a 304.
+  const ASSETS = {
+    fetch: async () =>
+      new Response("# a", {
+        status: 206,
+        headers: {
+          etag: ETAG_TWIN,
+          "content-type": "text/plain",
+          "content-length": "3",
+          "content-range": "bytes 0-2/3",
+        },
+      }),
+  };
+  const res = await createMdRouter().fetch(mdGet(ETAG_TWIN), { ASSETS });
+  assert.equal(res.status, 304);
+  assert.equal(res.headers.has("content-length"), false);
+  assert.equal(res.headers.has("content-range"), false);
+});
+
+test("a bot UA with no Accept and a matching If-None-Match gets the 304", async () => {
+  const stub = assetWorker();
+  const res = await createMdRouter().fetch(
+    get("https://x.test/a", { "user-agent": "GPTBot/1.0", "if-none-match": ETAG_TWIN }),
+    { ASSETS: stub }
+  );
+  assert.equal(res.status, 304);
+  assert.equal(res.headers.get("vary"), null);
+  assert.equal(stub.calls.length, 1);
+});
+
+test("If-None-Match uses weak comparison, in both directions, and over a list", async () => {
+  for (const inm of [`W/${ETAG_TWIN}`, `"other", ${ETAG_TWIN} , "x"`, `"o",W/${ETAG_TWIN}`]) {
+    const res = await createMdRouter().fetch(mdGet(inm), { ASSETS: assetWorker() });
+    assert.equal(res.status, 304, inm);
+  }
+  // A weak ETag on the twin matches a strong If-None-Match.
+  const weakTwin = {
+    fetch: async () =>
+      new Response("# a", { headers: { "content-type": "text/plain", etag: `W/${ETAG_TWIN}` } }),
+  };
+  const res = await createMdRouter().fetch(mdGet(ETAG_TWIN), { ASSETS: weakTwin });
+  assert.equal(res.status, 304);
+});
+
+test("a matching revalidation still gets its 304 when the twin's body has already errored", async () => {
+  // Cancelling an errored stream rejects with its error; the 304 must not.
+  const ASSETS = {
+    fetch: async (req) => {
+      const { pathname } = new URL(req.url);
+      if (pathname === "/a.md") {
+        const body = new ReadableStream({
+          start(controller) {
+            controller.error(new Error("stream failed"));
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: { etag: ETAG_TWIN, "content-type": "text/plain" },
+        });
+      }
+      return new Response("<p>a</p>", { headers: { "content-type": "text/html" } });
+    },
+  };
+  const res = await createMdRouter().fetch(mdGet(ETAG_TWIN), { ASSETS });
+  assert.equal(res.status, 304);
+  assert.equal(res.body, null);
+  assert.equal(res.headers.get("content-type"), "text/markdown; charset=utf-8");
+});
+
+test("an empty ETag never gets a 304, and empty list elements match nothing", async () => {
+  const withEtag = (etag) => ({
+    fetch: async () => new Response("# a", { headers: { etag, "content-type": "text/plain" } }),
+  });
+  for (const inm of ['"a",', '"a", , "b"', ""]) {
+    const res = await createMdRouter().fetch(mdGet(inm), { ASSETS: withEtag("") });
+    assert.equal(res.status, 200, `empty ETag, If-None-Match ${JSON.stringify(inm)}`);
+  }
+  // Empty elements are skipped, not compared: a real tag in the same list still matches.
+  const res = await createMdRouter().fetch(mdGet('"a", , "b"'), { ASSETS: withEtag('"b"') });
+  assert.equal(res.status, 304);
+});
+
+test("an entity-tag with a comma inside its quotes still matches", async () => {
+  // ETags are opaque and may contain commas; the list splits only outside quotes.
+  const ASSETS = {
+    fetch: async () =>
+      new Response("# a", { headers: { etag: '"a,b"', "content-type": "text/plain" } }),
+  };
+  for (const inm of ['W/"a,b"', '"x", W/"a,b"', '"a,b" , "y"']) {
+    const res = await createMdRouter().fetch(mdGet(inm), { ASSETS });
+    assert.equal(res.status, 304, inm);
+  }
+  for (const inm of ['"a"', '"b"', '"a", "b"']) {
+    const res = await createMdRouter().fetch(mdGet(inm), { ASSETS });
+    assert.equal(res.status, 200, inm);
+  }
+});
+
+test("If-None-Match: * matches an existing twin, but a missing twin still falls back to HTML", async () => {
+  const hit = assetWorker();
+  const res = await createMdRouter().fetch(mdGet("*"), { ASSETS: hit });
+  assert.equal(res.status, 304);
+  assert.equal(hit.calls.length, 1);
+
+  const miss = assetWorker({ twin: false });
+  const fallback = await createMdRouter().fetch(mdGet("*"), { ASSETS: miss });
+  assert.equal(fallback.status, 200);
+  assert.equal(await fallback.text(), "<p>a</p>");
+  assert.equal(fallback.headers.get("content-type"), "text/html");
+  assert.deepEqual(
+    miss.calls.map((c) => c.pathname),
+    ["/a.md", "/a"]
+  );
+  assert.equal(miss.calls[1].inm, "*");
+});
+
+test("a non-matching If-None-Match, or only If-Modified-Since, gets the full twin", async () => {
+  for (const req of [
+    mdGet('"stale"'),
+    twinGet(null, { "if-modified-since": "Wed, 21 Oct 2099 07:28:00 GMT" }),
+    twinGet(null),
+  ]) {
+    const stub = assetWorker();
+    const res = await createMdRouter({ vary: true }).fetch(req, { ASSETS: stub });
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), "# a");
+    assert.equal(res.headers.get("content-type"), "text/markdown; charset=utf-8");
+    assert.deepEqual(stub.calls, [{ pathname: "/a.md", inm: null }]);
+  }
+});
+
+test("a twin with no ETag never gets a 304", async () => {
+  const noEtag = {
+    fetch: async () => new Response("# a", { headers: { "content-type": "text/plain" } }),
+  };
+  for (const inm of ["*", ETAG_TWIN]) {
+    const res = await createMdRouter().fetch(mdGet(inm), { ASSETS: noEtag });
+    assert.equal(res.status, 200, inm);
+  }
 });
 
 test("a markdown client holding the 404 page's ETag gets the HTML fallback, not a 304", async () => {

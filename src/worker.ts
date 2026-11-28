@@ -94,10 +94,13 @@ const defaultMdPathFor = (pathname: string): string => {
  *  a static page when the request looks like an LLM fetcher (known bot UA
  *  or `Accept: text/markdown`), falling back to the HTML response if the
  *  `.md` twin doesn't exist (any non-ok reply). The twin is fetched without the
- *  client's `If-None-Match` / `If-Modified-Since`, so a markdown request gets
- *  the full twin, never a `304` for it; when the twin is missing, the HTML
- *  fallback is fetched with the original request and can still revalidate to
- *  a `304`.
+ *  client's `If-None-Match` / `If-Modified-Since`, so the asset worker can't
+ *  answer with a `304` for a twin that doesn't exist. A markdown client
+ *  revalidating a twin that exists gets a `304` answered by the worker (weak
+ *  comparison of `If-None-Match`, or `*`, with the twin's `ETag`;
+ *  `If-Modified-Since` alone never yields one); otherwise it gets the full
+ *  twin, or, when the twin is missing, the HTML fallback fetched with the
+ *  original request (which can still revalidate to a `304` of its own).
  *
  *  Pass through unchanged for non-GET, requests with a file extension,
  *  and "normal" browser requests — though the normal HTML page response also
@@ -203,6 +206,46 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
       .transform(response);
   };
 
+  // RFC 9110 §13.1.2 weak comparison of the client's `If-None-Match` with the
+  // twin's ETag. Plain string handling (split, trim, strip a leading `W/`): the
+  // header is attacker-controlled, so no regex runs on it. An entity-tag is
+  // opaque and may itself contain a comma (`W/"a,b"`), so the list splits only
+  // on commas outside quotes.
+  const stripWeak = (tag: string): string => (tag.startsWith("W/") ? tag.slice(2) : tag);
+  const entityTags = (header: string): string[] => {
+    const tags: string[] = [];
+    let quoted = false;
+    let start = 0;
+    for (let i = 0; i < header.length; i++) {
+      const c = header[i];
+      if (c === '"') {
+        quoted = !quoted;
+      } else if (c === "," && !quoted) {
+        tags.push(header.slice(start, i));
+        start = i + 1;
+      }
+    }
+    tags.push(header.slice(start));
+    return tags;
+  };
+  const noneMatch = (header: string | null, etag: string | null): boolean => {
+    if (header === null || etag === null) {
+      return false;
+    }
+    if (header.trim() === "*") {
+      return true;
+    }
+    // An empty ETag is no ETag; empty list elements are ignored (RFC 9110 §5.6.1).
+    const want = stripWeak(etag.trim());
+    if (want === "") {
+      return false;
+    }
+    return entityTags(header).some((tag) => {
+      const trimmed = tag.trim();
+      return trimmed !== "" && stripWeak(trimmed) === want;
+    });
+  };
+
   const encodePath = (path: string): string =>
     path
       .split("/")
@@ -222,7 +265,9 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
       acceptTokens.some((tok) => accept.includes(tok)) || (botUa !== false && botUa.test(ua));
     const mdPath = mdPathFor(url.pathname);
     // The twin is fetched WITHOUT `If-None-Match` / `If-Modified-Since`, so the
-    // answer is a full 200 or a non-ok, never a 304. The asset worker matches
+    // answer is a full 200 or a non-ok, never a 304 from ASSETS (the worker
+    // answers the client's revalidation itself, below, once the twin is known
+    // to exist). The asset worker matches
     // `If-None-Match` against whatever the path resolves to, and with
     // `not_found_handling: "404-page"` a missing twin resolves to the 404 page,
     // so a 304 for the twin can't be trusted; treating it as a miss would serve
@@ -289,6 +334,21 @@ export function createMdResponder<Env extends MdRouterEnv = MdRouterEnv>(
 
     if (!mdResponse.ok) {
       return withSocialImages(withVary(await env.ASSETS.fetch(request)), url);
+    }
+    if (noneMatch(request.headers.get("If-None-Match"), mdResponse.headers.get("ETag"))) {
+      // The twin exists (ok), so its own ETag is trustworthy: answer the
+      // revalidation here instead of re-sending the body. A body that has
+      // already errored rejects its cancel; that must not fail the answer.
+      try {
+        await mdResponse.body?.cancel();
+      } catch {
+        // The twin's body is discarded either way.
+      }
+      const notModified = new Response(null, { status: 304, headers: mdResponse.headers });
+      notModified.headers.delete("Content-Length");
+      notModified.headers.delete("Content-Range");
+      notModified.headers.set("Content-Type", "text/markdown; charset=utf-8");
+      return withVary(notModified);
     }
     // Static-asset hosts may type a `.md` file as text/plain or octet-stream.
     const markdown = new Response(mdResponse.body, mdResponse);
